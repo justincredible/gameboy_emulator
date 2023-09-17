@@ -96,6 +96,8 @@ impl LinkCable {
 
         let first = pid == slc2u32(&slice[4..8]);
 
+        println!("{:?} {:?}", pid, first);
+
         LinkCable {
             shmid,
             link,
@@ -111,6 +113,7 @@ impl LinkCable {
             std::slice::from_raw_parts_mut(self.link as *mut u8, SHM_SZ)
         };
 
+        // link order synchronization
         if self.first && slc2u32(&slice[4..8]) != pid {
             let mut index = 4;
             for byte in u322vec(pid) {
@@ -119,8 +122,7 @@ impl LinkCable {
             }
         }
 
-        let active = slice[2] > 0 || slice[10] > 0;
-        if active {
+        if slice[2] > 0 || slice[10] > 0 {
             if self.first {
                 mmu.write_byte(0xFF01, slice[0]);
                 mmu.write_byte(0xFF02, slice[1]);
@@ -138,16 +140,12 @@ impl LinkCable {
             }
         }
 
-        if sdc.1 == 0x81 && !active {
+        if sdc.1 == 0x81 && slice[2] == 0 && slice[10] == 0 {
             slice[2] = 1;
             slice[10] = 1;
             if self.first {
-                slice[0] = sdc.0;
-                slice[1] = sdc.1;
                 slice[9] = 0x80;
             } else {
-                slice[8] = sdc.0;
-                slice[9] = sdc.1;
                 slice[1] = 0x80;
             }
             let temp = slice[0];
