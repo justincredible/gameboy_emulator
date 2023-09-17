@@ -10,12 +10,14 @@ use crate::mmu::cartridge::Cartridge;
 use crate::mmu::interrupt::Interrupt;
 use crate::mmu::Memory;
 use crate::timer::Timer;
+use crate::serial::LinkCable;
 
 pub struct Emulator {
     cpu: Cpu,
     gpu: GPU,
     timer: Timer,
     memory: Memory,
+    serial: LinkCable,
 }
 
 impl Emulator {
@@ -26,6 +28,7 @@ impl Emulator {
             gpu: GPU::new(is_cgb),
             timer: Timer::new(),
             memory: Memory::from_cartridge(cartridge, rtc, is_cgb),
+            serial: LinkCable::new(is_cgb),
         }
     }
 
@@ -39,6 +42,8 @@ impl Emulator {
         let audio_buffer_full = self.memory.get_sound_mut().step(cycles);
         let vblank = self.gpu.step(cycles, &mut self.memory, system);
         controller.update(&mut self.memory);
+        self.serial.update(&mut self.memory);
+
         self.handle_interrupts();
 
         if audio_buffer_full {

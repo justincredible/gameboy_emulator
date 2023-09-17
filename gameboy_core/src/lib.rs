@@ -7,6 +7,7 @@ mod gpu;
 mod joypad;
 mod mmu;
 pub mod rtc;
+pub mod serial;
 pub mod sound;
 mod timer;
 
