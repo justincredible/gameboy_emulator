@@ -174,8 +174,8 @@ impl LinkCable {
             }
 
             if slice[2] == 0 && slice[10] == 0 &&
-                (slice[1] == 0x81 && slice[9] == 0x80 ||
-                slice[9] == 0x81 && slice[1] == 0x80) {
+                (self.first && slice[1] == 0x81 && slice[9] == 0x80 ||
+                !self.first && slice[9] == 0x81 && slice[1] == 0x80) {
                 slice[2] = 1;
                 slice[10] = 1;
 
@@ -183,13 +183,16 @@ impl LinkCable {
             }
 
             if slice[2] == 1 && slice[10] == 1 &&
-                (slice[1] == 0x81 && slice[9] == 0x80 ||
-                slice[9] == 0x81 && slice[1] == 0x80) {
-                if self.counter < 8 {
-                    let a = if self.first { slice[0] } else { slice[8] };
+                (self.first && slice[1] == 0x81 && slice[9] == 0x80 ||
+                !self.first && slice[9] == 0x81 && slice[1] == 0x80) {
+                if self.counter < 1 {
+                    /*let a = if self.first { slice[0] } else { slice[8] };
                     let b = if self.first {slice[8] } else { slice[0] };
                     slice[0] = (a & 0x7F) << 1 | (b & 0x80) >> 7;
-                    slice[8] = (b & 0x7F) << 1 | (a & 0x80) >> 7;
+                    slice[8] = (b & 0x7F) << 1 | (a & 0x80) >> 7;*/
+                    let temp = slice[0];
+                    slice[0] = slice[8];
+                    slice[8] = temp;
                     self.counter += 1;
                 } else {
                     slice[2] = 2;
