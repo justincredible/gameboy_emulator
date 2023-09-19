@@ -8,22 +8,6 @@ const LINK_CTRL: usize = 8;
 const FIRST_PID: usize = 12;
 const SHM_DATA: usize = 16; // safety: align(size_of(machine word))
 
-fn slc2u32(slice: &[u8]) -> u32 {
-    slice
-        .iter()
-        .take(4)
-        .fold(0, |sum, &val| sum * 256 + val as u32)
-}
-
-fn u322vec(value: u32) -> Vec<u8> {
-    let d = (value % 256) as u8;
-    let c = ((value / 256) % 256) as u8;
-    let b = ((value / 65536) % 256) as u8;
-    let a = (value / 16777216) as u8;
-
-    vec![a, b, c, d]
-}
-
 fn str2cstr(string: &str) -> Vec<i8> {
     string
         .bytes()
@@ -37,22 +21,19 @@ pub struct LinkCable {
     link: *mut libc::c_void,
     first: bool,
     counter: u8,
+    waiting: bool,
 }
 
 impl Drop for LinkCable {
     fn drop(&mut self) {
         unsafe {
-            let slice = std::slice::from_raw_parts_mut(self.link as *mut u8, SHM_DATA);
+            let offset = if !self.first { LINK_CTRL } else { FIRST_PID };
+            let rid = std::ptr::read(self.link.add(offset) as *const u32);
 
-            let index = if !self.first { LINK_CTRL } else { FIRST_PID };
-            let other_pid = slc2u32(&slice[index..index + 4]);
+            let offset = if self.first { LINK_CTRL } else { FIRST_PID };
+            std::ptr::write(self.link.add(offset) as *mut u32, 0);
 
-            let index = if self.first { LINK_CTRL } else { FIRST_PID };
-            for offset in 0..std::mem::size_of::<u32>() {
-                slice[index + offset] = 0;
-            }
-
-            if other_pid == 0 {
+            if rid == 0 {
                 libc::sem_trywait(self.semaphore());
                 libc::sem_post(self.semaphore());
                 libc::sem_destroy(self.semaphore());
@@ -77,7 +58,11 @@ impl LinkCable {
         let key = unsafe {
             libc::ftok(str2cstr("link_cable").as_ptr(), PROJ_ID)
         };
-        if key == -1 { panic!("ftok failed"); }
+        if key == -1 {
+            unsafe {
+                panic!("ftok failed: {:?}", *libc::__errno_location());
+            }
+        }
 
         let shmid = unsafe {
             libc::shmget(key, SHM_SZ, 0o664 | libc::IPC_CREAT)
@@ -108,19 +93,16 @@ impl LinkCable {
         if first {
             // initialize all memory
             unsafe {
-                std::ptr::write_bytes(link as *mut u8, 0, SHM_SZ);
+                std::ptr::write_bytes(link as *mut u64, 0, SHM_SZ / std::mem::size_of::<u64>());
                 std::ptr::write_bytes(link as *mut u8, 0xFF, 4);
                 std::ptr::write(link.add(LINK_CTRL) as *mut u32, pid);
+                std::ptr::write(link.add(FIRST_PID) as *mut u32, pid);
             }
 
             let status = unsafe {
                 libc::sem_init(link.add(SHM_DATA) as *mut libc::sem_t, PROJ_ID, 1)
             };
             if status != 0 { panic!("sem_init failed"); }
-        } else {
-            unsafe { // is this aligned on 64-bit machines?
-                std::ptr::write(link.add(FIRST_PID) as *mut u32, pid);
-            }
         }
 
         unsafe {
@@ -136,6 +118,7 @@ impl LinkCable {
             link,
             first,
             counter: 0,
+            waiting: false,
         }
     }
 
@@ -143,13 +126,23 @@ impl LinkCable {
         self.link.add(SHM_DATA) as *mut libc::sem_t
     }
 
+    fn disconnected(&self) -> bool {
+        // SAFETY
+        // this function only ever reads and compares to zero
+        unsafe {
+            let offset = if self.first { LINK_CTRL } else { FIRST_PID };
+
+            std::ptr::read(self.link.add(offset) as *const u32) == 0
+        }
+    }
+
     #[allow(dead_code)]
-    fn write(&mut self, index: usize, value: u8) {
+    fn write(&mut self, offset: usize, value: u8) {
         unsafe {
             let success = libc::sem_wait(self.semaphore());
 
             if success == 0 {
-                std::ptr::write(self.link.add(index) as *mut u8, value);
+                std::ptr::write(self.link.add(offset) as *mut u8, value);
                 libc::sem_post(self.semaphore());
             }
         }
@@ -164,18 +157,17 @@ impl LinkCable {
         };
 
         // link order synchronization
-        if self.first && slc2u32(&slice[LINK_CTRL..FIRST_PID]) != pid {
-            let mut index = LINK_CTRL;
-            for byte in u322vec(pid) {
-                slice[index] = byte;
-                index += 1;
+        // SAFETY
+        // this area of memory is only ever supposed to contain
+        // the process id of the first process in the working directory
+        unsafe {
+            let rid = std::ptr::read(self.link.add(FIRST_PID) as *mut u32);
+            let fid = std::ptr::read(self.link.add(LINK_CTRL) as *mut u32);
+            if self.first && fid != pid {
+                std::ptr::write(self.link.add(LINK_CTRL) as *mut u32, pid);
             }
-        }
-        if !self.first && slc2u32(&slice[FIRST_PID..SHM_DATA]) != pid {
-            let mut index = FIRST_PID;
-            for byte in u322vec(pid) {
-                slice[index] = byte;
-                index += 1;
+            if !self.first && fid != 0 && fid != rid {
+                std::ptr::write(self.link.add(LINK_CTRL) as *mut u32, rid);
             }
         }
 
@@ -190,13 +182,6 @@ impl LinkCable {
                 slice[3] = sdc.1;
             }
 
-            unsafe {
-                libc::sem_post(self.semaphore());
-            }
-        }
-
-        let success = unsafe { libc::sem_wait(self.semaphore()) };
-        if success == 0 {
             if slice[4] == 0 && slice[5] == 0 &&
                 (self.first && slice[1] == 0x81 && slice[3] == 0x80 ||
                 !self.first && slice[3] == 0x81 && slice[1] == 0x80 ||
@@ -211,57 +196,76 @@ impl LinkCable {
                 (self.first && slice[1] == 0x81 && slice[3] == 0x80 ||
                 !self.first && slice[3] == 0x81 && slice[1] == 0x80 ||
                 slice[1] == 0x81 && slice[3] == 0x81) {
-                if self.counter < 8 {
-                    let a = if self.first { slice[0] } else { slice[2] };
+                if self.counter < 1 {
+                    /*let a = if self.first { slice[0] } else { slice[2] };
                     let b = if self.first {slice[2] } else { slice[0] };
                     slice[0] = (a & 0x7F) << 1 | (b & 0x80) >> 7;
-                    slice[2] = (b & 0x7F) << 1 | (a & 0x80) >> 7;
-                    /*let temp = slice[0];
-                    slice[0] = slice[2];
-                    slice[2] = temp;*/
+                    slice[2] = (b & 0x7F) << 1 | (a & 0x80) >> 7;*/
+                    if slice[1] == 0x81 && slice[3] == 0x80 {
+                        slice[2] = slice[0];
+                    } else if slice[3] == 0x81 && slice[1] == 0x80 {
+                        slice[0] = slice[2];
+                    } else if slice[1] == 0x81 && slice[3] == 0x81 {
+                        let temp = slice[0];
+                        slice[0] = slice[2];
+                        slice[2] = temp;
+                    }
                     self.counter += 1;
                 } else {
-                    slice[4] = 2;
-                    slice[5] = 2;
+                    if slice[1] == 0x81 && slice[3] == 0x80 {
+                        slice[5] = 2;
+                        slice[3] &= 0x7F;
+                    } else if slice[3] == 0x81 && slice[1] == 0x80 {
+                        slice[4] = 2;
+                        slice[1] &= 0x7F;
+                    } else if slice[1] == 0x81 && slice[3] == 0x81 {
+                        slice[4] = 2;
+                        slice[1] &= 0x7F;
+                        slice[5] = 2;
+                        slice[3] &= 0x7F;
+                    }
+                    self.waiting = true;
                     self.counter = 0;
                 }
             }
 
-            unsafe {
-                libc::sem_post(self.semaphore());
+            if self.first && self.waiting && slice[3] & 0x80 == 0x80 {
+                slice[0] = slice[2];
+                slice[4] = 2;
+                slice[1] &= 0x7F;
             }
-        }
+            if !self.first && self.waiting && slice[1] & 0x80 == 0x80 {
+                slice[2] = slice[0];
+                slice[5] = 2;
+                slice[3] &= 0x7F;
+            }
 
-        let success = unsafe { libc::sem_wait(self.semaphore()) };
-        if success == 0 {
             if self.first && slice[4] > 0 {
                 mmu.write_byte(0xFF01, slice[0]);
-                mmu.write_byte(0xFF02, slice[1]);
 
-                let shmpid = slc2u32(&slice[FIRST_PID..SHM_DATA]);
-                if shmpid == 0 {
+                if self.disconnected() {
                     mmu.write_byte(0xFF01, 0xFF);
                 }
 
                 if slice[4] == 2 {
-                    mmu.write_byte(0xFF02, slice[1] & 0x7F);
+                    mmu.write_byte(0xFF02, slice[1]);
                     mmu.request_interrupt(Interrupt::Serial);
                     slice[4] = 0;
+                    self.waiting = false;
                 }
             }
             if !self.first && slice[5] > 0 {
                 mmu.write_byte(0xFF01, slice[2]);
-                mmu.write_byte(0xFF02, slice[3]);
 
-                let shmpid = slc2u32(&slice[LINK_CTRL..FIRST_PID]);
-                if shmpid == 0 {
+                if self.disconnected() {
                     mmu.write_byte(0xFF01, 0xFF);
                 }
 
                 if slice[5] == 2 {
-                    mmu.write_byte(0xFF02, slice[3] & 0x7F);
+                    mmu.write_byte(0xFF02, slice[3]);
                     mmu.request_interrupt(Interrupt::Serial);
                     slice[5] = 0;
+                    self.waiting = false;
                 }
             }
 
