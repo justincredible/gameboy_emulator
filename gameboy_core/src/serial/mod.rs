@@ -104,6 +104,8 @@ impl LinkCable {
                 libc::sem_init(link.add(SHM_DATA) as *mut libc::sem_t, PROJ_ID, 1)
             };
             if status != 0 { panic!("sem_init failed"); }
+        } else {
+            std::fs::remove_file(&key_file).unwrap();
         }
 
         unsafe {
