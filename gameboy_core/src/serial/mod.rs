@@ -13,6 +13,7 @@ fn str2cstr(string: &str) -> Vec<i8> {
         .bytes()
         .filter(|&c| c < 128)
         .map(|u| u as i8)
+        .chain(std::iter::once(0))
         .collect()
 }
 
