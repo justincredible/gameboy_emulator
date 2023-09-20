@@ -1,12 +1,17 @@
 use crate::mmu::interrupt::Interrupt;
 use crate::mmu::Memory;
 
-const PROJ_ID: i32 = 87;
+const PROJ_ID: i32 = 65;
 const SHM_SZ: usize = 24;
 const LINK_DATA: usize = 4;
 const LINK_CTRL: usize = 8;
 const FIRST_PID: usize = 12;
 const SHM_DATA: usize = 16; // safety: align(size_of(machine word))
+
+const STATUS_INT: u8 = 0xFF;
+const REQ_SEND: u8 = 0x81;
+const REQ_RECV: u8 = 0x80;
+const CLEAR_7: u8 = 0x7F;
 
 fn str2cstr(string: &str) -> Vec<i8> {
     string
@@ -21,7 +26,6 @@ pub struct LinkCable {
     shmid: i32,
     link: *mut libc::c_void,
     first: bool,
-    counter: u8,
     waiting: bool,
 }
 
@@ -66,7 +70,7 @@ impl LinkCable {
         }
 
         let shmid = unsafe {
-            libc::shmget(key, SHM_SZ, 0o664 | libc::IPC_CREAT)
+            libc::shmget(key, SHM_SZ, 0o666 | libc::IPC_CREAT)
         };
         if shmid == -1 { panic!("shmget failed"); }
 
@@ -75,7 +79,7 @@ impl LinkCable {
         };
         unsafe {
             if *(link as *const i8) == -1 {
-                panic!("shmat failed");
+                panic!("shmat failed: {:?}", *libc::__errno_location());
             }
         }
 
@@ -85,7 +89,7 @@ impl LinkCable {
             std::ptr::write(link.add(LINK_CTRL) as *mut u32, pid);
         }
 
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(std::time::Duration::from_millis(100));
 
         let first = unsafe {
             pid == std::ptr::read(link.add(LINK_CTRL) as *mut u32)
@@ -97,7 +101,6 @@ impl LinkCable {
                 std::ptr::write_bytes(link as *mut u64, 0, SHM_SZ / std::mem::size_of::<u64>());
                 std::ptr::write_bytes(link as *mut u8, 0xFF, 4);
                 std::ptr::write(link.add(LINK_CTRL) as *mut u32, pid);
-                std::ptr::write(link.add(FIRST_PID) as *mut u32, pid);
             }
 
             let status = unsafe {
@@ -105,12 +108,8 @@ impl LinkCable {
             };
             if status != 0 { panic!("sem_init failed"); }
         } else {
-            std::fs::remove_file(&key_file).unwrap();
-        }
-
-        unsafe {
-            if first != (pid == std::ptr::read(link.add(LINK_CTRL) as *mut u32)) {
-                panic!("Failed to synchronize");
+            unsafe {
+                std::ptr::write(link.add(FIRST_PID) as *mut u32, pid);
             }
         }
 
@@ -120,7 +119,6 @@ impl LinkCable {
             shmid,
             link,
             first,
-            counter: 0,
             waiting: false,
         }
     }
@@ -132,6 +130,7 @@ impl LinkCable {
     fn disconnected(&self) -> bool {
         // SAFETY
         // this function only ever reads and compares to zero
+        // false positives result in emulating reality ;-)
         unsafe {
             let offset = if self.first { LINK_CTRL } else { FIRST_PID };
 
@@ -155,125 +154,57 @@ impl LinkCable {
         let sdc = (mmu.read_byte(0xFF01), mmu.read_byte(0xFF02));
         let pid = std::process::id();
 
-        let slice = unsafe {
-            std::slice::from_raw_parts_mut(self.link as *mut u8, SHM_DATA)
-        };
-
-        // link order synchronization
-        // SAFETY
-        // this area of memory is only ever supposed to contain
-        // the process id of the first process in the working directory
-        unsafe {
-            let rid = std::ptr::read(self.link.add(FIRST_PID) as *mut u32);
-            let fid = std::ptr::read(self.link.add(LINK_CTRL) as *mut u32);
-            if self.first && fid != pid {
-                std::ptr::write(self.link.add(LINK_CTRL) as *mut u32, pid);
-            }
-            if !self.first && fid != 0 && fid != rid {
-                std::ptr::write(self.link.add(LINK_CTRL) as *mut u32, rid);
+        if self.first {
+            unsafe {
+                if pid != std::ptr::read(self.link.add(LINK_CTRL) as *mut u32) {
+                    std::ptr::write(self.link.add(LINK_CTRL) as *mut u32, pid);
+                }
             }
         }
 
-        let success = unsafe { libc::sem_wait(self.semaphore()) };
-        if success == 0 {
-            if self.first && slice[4] == 0 {
-                slice[0] = sdc.0;
-                slice[1] = sdc.1;
-            }
-            if !self.first && slice[5] == 0 {
-                slice[2] = sdc.0;
-                slice[3] = sdc.1;
-            }
+        if self.disconnected() {
+            mmu.write_byte(0xFF01, 0xFF);
+        } else {
+            let slice = unsafe {
+                std::slice::from_raw_parts_mut(self.link as *mut u8, SHM_DATA)
+            };
 
-            if slice[4] == 0 && slice[5] == 0 &&
-                (self.first && slice[1] == 0x81 && slice[3] == 0x80 ||
-                !self.first && slice[3] == 0x81 && slice[1] == 0x80 ||
-                slice[1] == 0x81 && slice[3] == 0x81) {
-                slice[4] = 1;
-                slice[5] = 1;
+            let success = unsafe {
+                libc::sem_wait(self.semaphore())
+            };
+            if success == 0 {
+                let (check_int_slot, raise_int_slot, read_slot, write_slot) =
+                    if self.first {
+                        (4, 5, 0, 2)
+                    } else {
+                        (5, 4, 2, 0)
+                    };
 
-                self.counter = 0;
-            }
-
-            if slice[4] == 1 && slice[5] == 1 &&
-                (self.first && slice[1] == 0x81 && slice[3] == 0x80 ||
-                !self.first && slice[3] == 0x81 && slice[1] == 0x80 ||
-                slice[1] == 0x81 && slice[3] == 0x81) {
-                if self.counter < 1 {
-                    /*let a = if self.first { slice[0] } else { slice[2] };
-                    let b = if self.first {slice[2] } else { slice[0] };
-                    slice[0] = (a & 0x7F) << 1 | (b & 0x80) >> 7;
-                    slice[2] = (b & 0x7F) << 1 | (a & 0x80) >> 7;*/
-                    if slice[1] == 0x81 && slice[3] == 0x80 {
-                        slice[2] = slice[0];
-                    } else if slice[3] == 0x81 && slice[1] == 0x80 {
-                        slice[0] = slice[2];
-                    } else if slice[1] == 0x81 && slice[3] == 0x81 {
-                        let temp = slice[0];
-                        slice[0] = slice[2];
-                        slice[2] = temp;
+                if !self.waiting {
+                    if slice[check_int_slot] == STATUS_INT {
+                        self.waiting = true;
+                    } else {
+                        if sdc.1 == 0x81 {
+                            slice[write_slot] = sdc.0;
+                            slice[raise_int_slot] = STATUS_INT;
+                            self.waiting = true;
+                        }
                     }
-                    self.counter += 1;
-                } else {
-                    if slice[1] == 0x81 && slice[3] == 0x80 {
-                        slice[5] = 2;
-                        slice[3] &= 0x7F;
-                    } else if slice[3] == 0x81 && slice[1] == 0x80 {
-                        slice[4] = 2;
-                        slice[1] &= 0x7F;
-                    } else if slice[1] == 0x81 && slice[3] == 0x81 {
-                        slice[4] = 2;
-                        slice[1] &= 0x7F;
-                        slice[5] = 2;
-                        slice[3] &= 0x7F;
+                }
+                else {
+                    if slice[check_int_slot] == 0 {
+                        slice[write_slot] = sdc.0;
                     }
-                    self.waiting = true;
-                    self.counter = 0;
-                }
-            }
-
-            if self.first && self.waiting && slice[3] & 0x80 == 0x80 {
-                slice[0] = slice[2];
-                slice[4] = 2;
-                slice[1] &= 0x7F;
-            }
-            if !self.first && self.waiting && slice[1] & 0x80 == 0x80 {
-                slice[2] = slice[0];
-                slice[5] = 2;
-                slice[3] &= 0x7F;
-            }
-
-            if self.first && slice[4] > 0 {
-                mmu.write_byte(0xFF01, slice[0]);
-
-                if self.disconnected() {
-                    mmu.write_byte(0xFF01, 0xFF);
+                    if slice[check_int_slot] == STATUS_INT {
+                        mmu.write_byte(0xFF01, slice[read_slot] & 0x7F);
+                        mmu.request_interrupt(Interrupt::Serial);
+                        slice[check_int_slot] = 0;
+                    }
                 }
 
-                if slice[4] == 2 {
-                    mmu.write_byte(0xFF02, slice[1]);
-                    mmu.request_interrupt(Interrupt::Serial);
-                    slice[4] = 0;
-                    self.waiting = false;
+                unsafe {
+                    libc::sem_post(self.semaphore());
                 }
-            }
-            if !self.first && slice[5] > 0 {
-                mmu.write_byte(0xFF01, slice[2]);
-
-                if self.disconnected() {
-                    mmu.write_byte(0xFF01, 0xFF);
-                }
-
-                if slice[5] == 2 {
-                    mmu.write_byte(0xFF02, slice[3]);
-                    mmu.request_interrupt(Interrupt::Serial);
-                    slice[5] = 0;
-                    self.waiting = false;
-                }
-            }
-
-            unsafe {
-                libc::sem_post(self.semaphore());
             }
         }
     }
