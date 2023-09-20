@@ -16,13 +16,21 @@ fn main() -> Result<(), String> {
                 .required(true)
                 .index(1),
         )
+        .arg(
+            Arg::with_name("linked rom filename")
+                .help("rom file to link with")
+                .required(false)
+                .index(2),
+        )
         .get_matches();
 
     let rom_filename = matches.value_of("rom filename").unwrap();
+    if let Some(filename) = matches.value("linked rom filename") {
+
+    }
     let mut file = File::open(rom_filename).map_err(|e| format!("{:?}", e))?;
     let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)
-        .map_err(|e| format!("{:?}", e))?;
+    file.read_to_end(&mut buffer).map_err(|e| format!("{:?}", e))?;
     gameboy_opengl::start(buffer)?;
 
     Ok(())
