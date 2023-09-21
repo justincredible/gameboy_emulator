@@ -9,23 +9,28 @@ use crate::joypad::Controller;
 use crate::mmu::cartridge::Cartridge;
 use crate::mmu::interrupt::Interrupt;
 use crate::mmu::Memory;
+use crate::serial::LinkCable;
 use crate::timer::Timer;
+
+use std::process::Child;
 
 pub struct Emulator {
     cpu: Cpu,
     gpu: GPU,
     timer: Timer,
     memory: Memory,
+    serial: LinkCable,
 }
 
 impl Emulator {
-    pub fn from_cartridge(cartridge: Cartridge, rtc: Box<dyn RTC>) -> Emulator {
+    pub fn from_cartridge(cartridge: Cartridge, rtc: Box<dyn RTC>, linked_gameboy: Option<Child>) -> Emulator {
         let is_cgb = cartridge.is_cgb();
         Emulator {
             cpu: Cpu::new(is_cgb),
             gpu: GPU::new(is_cgb),
             timer: Timer::new(),
             memory: Memory::from_cartridge(cartridge, rtc, is_cgb),
+            serial: linked_gameboy.into(),
         }
     }
 
@@ -39,6 +44,7 @@ impl Emulator {
         let audio_buffer_full = self.memory.get_sound_mut().step(cycles);
         let vblank = self.gpu.step(cycles, &mut self.memory, system);
         controller.update(&mut self.memory);
+        self.serial.step(&mut self.memory);
         self.handle_interrupts();
 
         if audio_buffer_full {

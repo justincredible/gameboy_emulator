@@ -7,6 +7,7 @@ mod gpu;
 mod joypad;
 mod mmu;
 pub mod rtc;
+pub mod serial;
 pub mod sound;
 mod timer;
 
@@ -27,10 +28,11 @@ pub struct Gameboy {
 }
 impl Gameboy {
     /// Loads game from rom. Needs a Real Time Clock
-    pub fn from_rom(rom: Vec<u8>, rtc: Box<dyn RTC>) -> Result<Gameboy, String> {
+    pub fn from_rom(rom: Vec<u8>, rtc: Box<dyn RTC>, linked_gameboy: Option<std::process::Child>)
+        -> Result<Gameboy, String> {
         let cartridge = Cartridge::from_rom(rom)?;
         Ok(Gameboy {
-            emulator: Emulator::from_cartridge(cartridge, rtc),
+            emulator: Emulator::from_cartridge(cartridge, rtc, linked_gameboy),
             controller: Controller::new(),
         })
     }

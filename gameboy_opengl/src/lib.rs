@@ -13,10 +13,11 @@ use std::cell::RefCell;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
+use std::process::Child;
 use std::rc::Rc;
 use std::time::Duration;
 
-pub fn start(rom: Vec<u8>) -> Result<(), String> {
+pub fn start(rom: Vec<u8>, linked_gameboy: Option<Child>) -> Result<(), String> {
     let sdl_context = sdl2::init()?;
 
     let audio_subsystem = sdl_context.audio()?;
@@ -52,7 +53,7 @@ pub fn start(rom: Vec<u8>) -> Result<(), String> {
     canvas.clear();
 
     let rtc = Box::new(NativeRTC::new());
-    let mut emulator = Gameboy::from_rom(rom, rtc)?;
+    let mut emulator = Gameboy::from_rom(rom, rtc, linked_gameboy)?;
 
     load_ram_save_data(emulator.get_cartridge_mut()).map_err(|e| format!("{:?}", e))?;
     load_timestamp_data(emulator.get_cartridge_mut()).map_err(|e| format!("{:?}", e))?;
