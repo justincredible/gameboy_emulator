@@ -16,28 +16,31 @@ fn main() -> Result<(), String> {
                 .help("rom file to use")
                 .required(true)
                 .index(1),
-            Arg::with_name("linked filename")
-                .help("rom file to link with")
-                .required(false)
-                .index(2),
+            Arg::from_usage("[link] -l, --link <rom> 'rom file to link with'"),
+            Arg::from_usage("[linked] --linked 'Run with linking'")
+                .hidden(true),
         ])
         .get_matches();
 
-    let child = if let Some(linked_filename) = matches.value_of("linked filename") {
-        let bin_name = std::env::args_os().next().unwrap();
+    let linked = matches.is_present("linked");
+    let child = matches
+        .value_of("link")
+        .and_then(|linked_filename| {
+            let bin_name = std::env::args_os().next().unwrap();
 
-        Command::new(&bin_name)
-            .arg(&linked_filename)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .ok()
-    }
+            Command::new(&bin_name)
+                .arg(&linked_filename)
+                .arg("--linked")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .ok()
+        });
     let rom_filename = matches.value_of("rom filename").unwrap();
     let mut file = File::open(rom_filename).map_err(|e| format!("{:?}", e))?;
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer).map_err(|e| format!("{:?}", e))?;
-    gameboy_opengl::start(buffer, child)?;
+    gameboy_opengl::start(buffer, (linked, child))?;
 
     Ok(())
 }

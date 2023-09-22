@@ -17,7 +17,7 @@ use std::process::Child;
 use std::rc::Rc;
 use std::time::Duration;
 
-pub fn start(rom: Vec<u8>, linked_gameboy: Option<Child>) -> Result<(), String> {
+pub fn start(rom: Vec<u8>, linked_gameboy: (bool, Option<Child>)) -> Result<(), String> {
     let sdl_context = sdl2::init()?;
 
     let audio_subsystem = sdl_context.audio()?;

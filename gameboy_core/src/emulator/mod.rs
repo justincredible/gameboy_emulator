@@ -23,7 +23,7 @@ pub struct Emulator {
 }
 
 impl Emulator {
-    pub fn from_cartridge(cartridge: Cartridge, rtc: Box<dyn RTC>, linked_gameboy: Option<Child>) -> Emulator {
+    pub fn from_cartridge(cartridge: Cartridge, rtc: Box<dyn RTC>, linked_gameboy: (bool, Option<Child>)) -> Emulator {
         let is_cgb = cartridge.is_cgb();
         Emulator {
             cpu: Cpu::new(is_cgb),

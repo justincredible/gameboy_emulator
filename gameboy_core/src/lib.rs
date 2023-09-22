@@ -25,15 +25,17 @@ pub use crate::rtc::Rtc;
 pub struct Gameboy {
     emulator: Emulator,
     controller: Controller,
+    //link_cable: Option<LinkCable>,
 }
 impl Gameboy {
     /// Loads game from rom. Needs a Real Time Clock
-    pub fn from_rom(rom: Vec<u8>, rtc: Box<dyn RTC>, linked_gameboy: Option<std::process::Child>)
+    pub fn from_rom(rom: Vec<u8>, rtc: Box<dyn RTC>, linked_gameboy: (bool, Option<std::process::Child>))
         -> Result<Gameboy, String> {
         let cartridge = Cartridge::from_rom(rom)?;
         Ok(Gameboy {
             emulator: Emulator::from_cartridge(cartridge, rtc, linked_gameboy),
             controller: Controller::new(),
+            //link_cable: linked_gameboy,
         })
     }
     /// Run emulation step
