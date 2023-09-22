@@ -2,7 +2,7 @@ use crate::mmu::Memory;
 use crate::mmu::interrupt::Interrupt;
 
 pub trait ByteTransfer {
-    type Wait;
+    type Waiter;
     type Receiver;
     type Counter;
 
