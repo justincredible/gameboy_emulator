@@ -3,7 +3,7 @@ use crate::mmu::interrupt::Interrupt;
 
 pub trait ByteTransfer {
     type Wait;
-    type Receive;
+    type Receiver;
     type Counter;
 
     fn send(&mut self, byte: u8);
