@@ -9,7 +9,7 @@ use crate::joypad::Controller;
 use crate::mmu::cartridge::Cartridge;
 use crate::mmu::interrupt::Interrupt;
 use crate::mmu::Memory;
-use crate::serial::LinkCable;
+use crate::serial::{ByteTransfer, LinkCable};
 use crate::timer::Timer;
 
 use std::process::Child;

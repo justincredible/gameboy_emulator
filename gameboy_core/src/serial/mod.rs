@@ -31,7 +31,7 @@ pub trait ByteTransfer {
             if sdc.1 & 0x80 == 0x80 {
                 self.send(sdc.0);
             }
-            if sc & 0x81 == 0x81 {
+            if sdc.1 & 0x81 == 0x81 {
                 self.wait();
             }
         }
@@ -56,3 +56,5 @@ pub enum LinkCable {
     Linked(Option<Child>),
 }
 
+impl ByteTransfer for LinkCable {
+}
