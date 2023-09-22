@@ -27,8 +27,8 @@ pub trait ByteTransfer {
         if !self.waiting() {
             if sdc.1 & 0x80 == 0x80 {
                 self.send(sdc.0);
-            }
-            if sdc.1 & 0x81 == 0x81 {
+            //}
+            //if sdc.1 & 0x81 == 0x81 {
                 self.wait();
             }
         }
@@ -78,7 +78,7 @@ impl ByteTransfer for LinkCable {
 
     fn receive(&mut self) -> u8 {
         match self {
-            LinkCable::Unlinked => panic!(""),
+            LinkCable::Unlinked => unreachable!(),
             LinkCable::Linked { owning: None, receiving, .. } => {
                 receiving
                     .take()
@@ -132,25 +132,32 @@ impl ByteTransfer for LinkCable {
         match self {
             LinkCable::Unlinked => false,
             LinkCable::Linked { owning: None, receiving, .. } => {
-                receiving
-                    .get_or_insert(std::thread::spawn(|| {
-                        let mut buffer = [0];
+                if receiving.is_none() {
+                    *receiving = std::thread::Builder::new()
+                        .spawn(|| {
+                            let mut buffer = [0];
 
-                        let mut result = stdin().read(&mut buffer);
-                        while let Err(error) = result {
-                            eprintln!("{:?}", error);
-                            result = stdin().read(&mut buffer);
-                        }
-                        let count = unsafe {
-                            result.unwrap_unchecked()
-                        };
-                        if count > 0 {
-                            buffer[0]
-                        } else {
-                            panic!("unexpected count: {:?}", count);
-                        }
-                    }))
-                    .is_finished()
+                            let mut result = stdin().read(&mut buffer);
+                            while let Err(error) = result {
+                                eprintln!("{:?}", error);
+                                result = stdin().read(&mut buffer);
+                            }
+                            let count = unsafe {
+                                result.unwrap_unchecked()
+                            };
+                            if count > 0 {
+                                buffer[0]
+                            } else {
+                                panic!("unexpected count: {:?}", count);
+                            }
+                        })
+                        .ok();
+                }
+
+                receiving
+                    .as_ref()
+                    .map(|thread| thread.is_finished())
+                    .unwrap_or_default()
             },
             LinkCable::Linked{ owning: Some(linked_gameboy), .. } => false,
         }
