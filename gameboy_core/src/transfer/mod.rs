@@ -19,35 +19,39 @@ pub trait ByteTransfer {
 
     fn disconnected(&self) -> bool;
 
-    fn update(&mut self, mmu: &mut Memory) {
-        let sdc = (mmu.read_byte(0xFF01), mmu.read_byte(0xFF02));
+    fn connect(&mut self);
 
-        if self.ready() {
-            if sdc.1 & 0x80 == 0x80 {
-                self.send(sdc.0);
+    fn update(&mut self, mmu: &mut Memory) {
+        if self.disconnected() {
+            self.connect()
+        } else {
+            let sdc = (mmu.read_byte(0xFF01), mmu.read_byte(0xFF02));
+
+            if self.ready() {
+                if sdc.1 & 0x80 == 0x80 {
+                    self.send(sdc.0);
+                    self.step();
+                }
+            }
+
+            if self.received() {
+                mmu.write_byte(0xFF01, self.receive());
+                mmu.write_byte(0xFF02, sdc.1 & 0x7F);
+                mmu.request_interrupt(Interrupt::Serial);
+                self.reset();
+            } else if self.waiting() {
                 self.step();
             }
-        }
-
-        if self.received() {
-            mmu.write_byte(0xFF01, self.receive());
-            mmu.write_byte(0xFF02, sdc.1 & 0x7F);
-            mmu.request_interrupt(Interrupt::Serial);
-            self.reset();
-        } else if self.waiting() {
-            self.step();
         }
     }
 }
 
 use std::io::{Read, stdin, stdout, Write};
 use std::process::Child;
-use std::thread::JoinHandle;
 
 pub enum LinkState {
     Ready,
     Waiting(u8),
-    TimedOut,
     Disconnected,
 }
 
@@ -55,7 +59,7 @@ pub enum LinkCable {
     Unlinked,
     Linked {
         owning: Option<Child>,
-        receiving: Option<JoinHandle<u8>>,
+        receiving: Option<u8>,
         status: LinkState,
     },
 }
@@ -68,25 +72,30 @@ impl ByteTransfer for LinkCable {
             LinkCable::Linked { owning: None, .. } => {
                 // windows may have an issue with stdout
                 stdout()
-                    .write_all(&[byte])
+                    .write(&[byte])
                     .expect("error other than interrupted");
                 stdout().flush().expect("I/O error or EOF");
             },
-            LinkCable::Linked { owning: Some(linked_gameboy), .. } => {},
+            LinkCable::Linked { owning: Some(gameboy), .. } => {
+                let pipe = gameboy.stdin
+                    .as_mut()
+                    .expect("pipe to child stdin");
+                pipe
+                    .write(&[byte])
+                    .expect("error other than interrupted");
+                pipe.flush().expect("I/O error or EOF");
+            },
         }
     }
 
     fn receive(&mut self) -> u8 {
         match self {
             LinkCable::Unlinked => unreachable!(),
-            LinkCable::Linked { owning: None, receiving, .. } => {
+            LinkCable::Linked { receiving, .. } => {
                 receiving
                     .take()
-                    .expect("a completed thread")
-                    .join()
                     .expect("a byte")
             },
-            LinkCable::Linked{ owning: Some(linked_gameboy), .. } => 0,
         }
     }
 
@@ -95,8 +104,8 @@ impl ByteTransfer for LinkCable {
             LinkCable::Unlinked => (),
             LinkCable::Linked { status, .. } => *status = match status {
                 LinkState::Ready => LinkState::Waiting(0),
-                LinkState::Waiting(c) if *c < 8 => LinkState::Waiting(*c + 1),
-                LinkState::Waiting(_) => LinkState::TimedOut,
+                LinkState::Waiting(c) if *c < 1 => LinkState::Waiting(*c + 1),
+                LinkState::Waiting(_) => LinkState::Ready,
                 _ => LinkState::Disconnected,
             },
         }
@@ -134,40 +143,80 @@ impl ByteTransfer for LinkCable {
             LinkCable::Unlinked => false,
             LinkCable::Linked { owning: None, receiving, .. } => {
                 if receiving.is_none() {
-                    *receiving = std::thread::Builder::new()
-                        .spawn(|| {
-                            let mut buffer = [0];
+                    let mut buffer = [0];
 
-                            let mut result = stdin().read(&mut buffer);
-                            while let Err(error) = result {
-                                eprintln!("{:?}", error);
-                                result = stdin().read(&mut buffer);
-                            }
-                            let count = unsafe {
-                                result.unwrap_unchecked()
-                            };
-                            if count > 0 {
-                                buffer[0]
-                            } else {
-                                panic!("unexpected count: {:?}", count);
-                            }
-                        })
-                        .ok();
+                    let result = stdin().read(&mut buffer);
+                    let count = result.expect("a byte");
+                    if count > 0 {
+                        *receiving = Some(buffer[0]);
+                    }
                 }
 
-                receiving
-                    .as_ref()
-                    .map(|thread| thread.is_finished())
-                    .unwrap_or_default()
+                receiving.is_some()
             },
-            LinkCable::Linked{ owning: Some(linked_gameboy), .. } => false,
+            LinkCable::Linked { owning: Some(gameboy), receiving, .. } => {
+                if receiving.is_none() {
+                    let mut buffer = [0];
+
+                    let result = gameboy.stdout
+                        .as_mut()
+                        .expect("pipe to child stdout")
+                        .read(&mut buffer);
+                    let count = result.expect("a byte");
+                    if count > 0 {
+                        *receiving = Some(buffer[0]);
+                    }
+                }
+
+                receiving.is_some()
+            },
         }
     }
 
     fn disconnected(&self) -> bool {
         match self {
             LinkCable::Unlinked => true,
-            LinkCable::Linked { .. } => false,
+            LinkCable::Linked { status, .. } => match status {
+                LinkState::Disconnected => true,
+                _ => false,
+            }
+        }
+    }
+
+    fn connect(&mut self) {
+        match self {
+            LinkCable::Unlinked => (),
+            LinkCable::Linked { owning: None, status, .. } => {
+                stdout()
+                    .write(&[0xFF])
+                    .expect("stdout piped");
+                stdout().flush().expect("IO error");
+                let mut buffer = [0];
+                let response = stdin()
+                    .read(&mut buffer)
+                    .expect("the same byte value");
+                if response == 0xFF {
+                    *status = LinkState::Ready;
+                }
+            },
+            LinkCable::Linked { owning: Some(gameboy), status, .. } => {
+                let pipe = gameboy.stdin
+                    .as_mut()
+                    .expect("pipe to child stdin");
+                pipe
+                    .write(&[0xFF])
+                    .expect("stdout piped");
+                pipe.flush().expect("IO error");
+                let mut buffer = [0];
+                let response = gameboy.stdout
+                    .as_mut()
+                    .expect("pipe to child stdout")
+                    .read(&mut buffer)
+                    .expect("the same byte value");
+                if response == 0xFF {
+                    *status = LinkState::Ready;
+                }
+            },
         }
     }
 }
@@ -180,7 +229,7 @@ impl From<(bool, Option<Child>)> for LinkCable {
             (_, value) => LinkCable::Linked {
                 owning: value,
                 receiving: None,
-                status: LinkState::Ready,
+                status: LinkState::Disconnected,
             }
         }
     }
