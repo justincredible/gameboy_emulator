@@ -22,25 +22,26 @@ pub use crate::gpu::color::Color;
 pub use crate::joypad::Controller;
 pub use crate::mmu::cartridge::Cartridge;
 pub use crate::rtc::Rtc;
+pub use crate::transfer::ByteTransfer;
 pub struct Gameboy {
     emulator: Emulator,
     controller: Controller,
-    //link_cable: Option<LinkCable>,
+    link_cable: Box<dyn ByteTransfer>,
 }
 impl Gameboy {
     /// Loads game from rom. Needs a Real Time Clock
-    pub fn from_rom(rom: Vec<u8>, rtc: Box<dyn RTC>, linked_gameboy: (bool, Option<std::process::Child>))
+    pub fn from_rom(rom: Vec<u8>, rtc: Box<dyn RTC>, linked_gameboy: Box<dyn ByteTransfer>)
         -> Result<Gameboy, String> {
         let cartridge = Cartridge::from_rom(rom)?;
         Ok(Gameboy {
-            emulator: Emulator::from_cartridge(cartridge, rtc, linked_gameboy),
+            emulator: Emulator::from_cartridge(cartridge, rtc),
             controller: Controller::new(),
-            //link_cable: linked_gameboy,
+            link_cable: linked_gameboy,
         })
     }
     /// Run emulation step
     pub fn emulate(&mut self, system: &mut impl PixelMapper) -> emulator::step_result::StepResult {
-        self.emulator.emulate(system, &mut self.controller)
+        self.emulator.emulate(system, &mut self.controller, self.link_cable.as_mut())
     }
     pub fn get_audio_buffer(&self) -> &[f32] {
         self.emulator.get_audio_buffer()
