@@ -7,29 +7,25 @@ pub trait ByteTransfer {
 
     fn receive(&mut self) -> u8;
 
-    fn wait(&mut self);
+    fn step(&mut self);
 
-    fn idle(&mut self);
+    fn reset(&mut self);
 
-    fn count(&mut self);
+    fn ready(&self) -> bool;
 
     fn waiting(&self) -> bool;
-
-    fn timeout(&self) -> bool;
 
     fn received(&mut self) -> bool;
 
     fn disconnected(&self) -> bool;
 
-    fn step(&mut self, mmu: &mut Memory) {
+    fn update(&mut self, mmu: &mut Memory) {
         let sdc = (mmu.read_byte(0xFF01), mmu.read_byte(0xFF02));
 
-        if !self.waiting() {
+        if self.ready() {
             if sdc.1 & 0x80 == 0x80 {
                 self.send(sdc.0);
-            //}
-            //if sdc.1 & 0x81 == 0x81 {
-                self.wait();
+                self.step();
             }
         }
 
@@ -37,11 +33,9 @@ pub trait ByteTransfer {
             mmu.write_byte(0xFF01, self.receive());
             mmu.write_byte(0xFF02, sdc.1 & 0x7F);
             mmu.request_interrupt(Interrupt::Serial);
-            self.idle();
-        } else if self.waiting() && self.timeout() {
-            self.idle();
+            self.reset();
         } else if self.waiting() {
-            self.count();
+            self.step();
         }
     }
 }
@@ -50,13 +44,19 @@ use std::io::{Read, stdin, stdout, Write};
 use std::process::Child;
 use std::thread::JoinHandle;
 
+pub enum LinkState {
+    Ready,
+    Waiting(u8),
+    TimedOut,
+    Disconnected,
+}
+
 pub enum LinkCable {
     Unlinked,
     Linked {
         owning: Option<Child>,
-        waiting: bool,
-        counting: u8,
         receiving: Option<JoinHandle<u8>>,
+        status: LinkState,
     },
 }
 
@@ -90,41 +90,42 @@ impl ByteTransfer for LinkCable {
         }
     }
 
-    fn wait(&mut self) {
+    fn step(&mut self) {
         match self {
             LinkCable::Unlinked => (),
-            LinkCable::Linked { waiting, .. } => *waiting = true,
-        }
-    }
-
-    fn idle(&mut self) {
-        match self {
-            LinkCable::Unlinked => (),
-            LinkCable::Linked { waiting, counting, .. } => {
-                *waiting = false;
-                *counting = 0;
+            LinkCable::Linked { status, .. } => *status = match status {
+                LinkState::Ready => LinkState::Waiting(0),
+                LinkState::Waiting(c) if *c < 8 => LinkState::Waiting(*c + 1),
+                LinkState::Waiting(_) => LinkState::TimedOut,
+                _ => LinkState::Disconnected,
             },
         }
     }
 
-    fn count(&mut self) {
+    fn reset(&mut self) {
         match self {
             LinkCable::Unlinked => (),
-            LinkCable::Linked { counting, .. } => *counting += 1,
+            LinkCable::Linked { status, .. } => *status = LinkState::Ready,
+        }
+    }
+
+    fn ready(&self) -> bool {
+        match self {
+            LinkCable::Unlinked => false,
+            LinkCable::Linked { status, .. } => match status {
+                LinkState::Ready => true,
+                _ => false,
+            },
         }
     }
 
     fn waiting(&self) -> bool {
         match self {
             LinkCable::Unlinked => true,
-            LinkCable::Linked { waiting, .. } => *waiting,
-        }
-    }
-
-    fn timeout(&self) -> bool {
-        match self {
-            LinkCable::Unlinked => false,
-            LinkCable::Linked { counting, .. } => *counting >= 8,
+            LinkCable::Linked { status, .. } => match status {
+                LinkState::Waiting(_) => true,
+                _ => false,
+            },
         }
     }
 
@@ -178,9 +179,8 @@ impl From<(bool, Option<Child>)> for LinkCable {
             (false, None) => LinkCable::Unlinked,
             (_, value) => LinkCable::Linked {
                 owning: value,
-                waiting: false,
-                counting: 0,
                 receiving: None,
+                status: LinkState::Ready,
             }
         }
     }

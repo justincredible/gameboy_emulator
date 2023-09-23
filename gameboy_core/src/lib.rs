@@ -7,9 +7,9 @@ mod gpu;
 mod joypad;
 mod mmu;
 pub mod rtc;
-pub mod serial;
 pub mod sound;
 mod timer;
+pub mod transfer;
 
 pub use crate::button::Button;
 pub use crate::controller_event::ControllerEvent;
