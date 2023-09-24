@@ -4,7 +4,7 @@ extern crate clap;
 use clap::{App, Arg};
 use std::fs::File;
 use std::io::Read;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 fn main() -> Result<(), String> {
     let matches = App::new(crate_name!())
@@ -31,9 +31,6 @@ fn main() -> Result<(), String> {
             Command::new(&bin_name)
                 .arg(&linked_filename)
                 .arg("--linked")
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stdout(Stdio::piped())
                 .spawn()
                 .ok()
         });

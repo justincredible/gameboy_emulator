@@ -4,7 +4,8 @@ use std::process::Child;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use raw_sync::locks::{LockImpl, LockInit, Mutex};
-use shared_memory::{ShmemConf, ShmemError};
+use raw_sync::Timeout;
+use shared_memory::{Shmem, ShmemConf, ShmemError};
 
 pub enum LinkState {
     Disconnected,
@@ -18,7 +19,8 @@ pub enum LinkCable {
         owning: Option<Child>,
         receiving: Option<u8>,
         status: LinkState,
-        channel: Box<dyn LockImpl>,
+        shmem: Shmem,
+        mutex: Box<dyn LockImpl>,
     },
 }
 
@@ -27,8 +29,8 @@ impl ByteTransfer for LinkCable {
     fn send(&mut self, byte: u8) {
         match self {
             LinkCable::Unlinked => (),
-            LinkCable::Linked { channel, .. } => {
-                let mut guard = channel.lock().unwrap();
+            LinkCable::Linked { mutex, .. } => {
+                let mut guard = mutex.lock().unwrap();
                 let val: &mut u8 = unsafe { &mut **guard };
                 *val = byte;
             },
@@ -88,12 +90,16 @@ impl ByteTransfer for LinkCable {
     fn received(&mut self) -> bool {
         match self {
             LinkCable::Unlinked => false,
-            LinkCable::Linked { receiving, channel, .. } => {
-                let mut guard = channel.lock().unwrap();
-                let val: &mut u8 = unsafe { &mut **guard };
+            LinkCable::Linked { receiving, mutex, .. } => {
+                mutex.try_lock(Timeout::Val(std::time::Duration::from_secs(0)))
+                    .and_then(|mut guard| {
+                        let val: &mut u8 = unsafe { &mut **guard };
 
-                *receiving = Some(*val);
+                        *receiving = Some(*val);
 
+                        Ok(())
+                    })
+                    .unwrap_or_default();
                 receiving.is_some()
             },
         }
@@ -124,7 +130,6 @@ impl From<(bool, Option<Child>)> for LinkCable {
         match value {
             (false, None) => LinkCable::Unlinked,
             (_, value) => {
-                println!("Link initialising");
                 let shmem = match ShmemConf::new().size(16).flink("link_cable").create() {
                     Ok(m) => m,
                     Err(ShmemError::LinkExists) => ShmemConf::new().flink("link_cable").open().unwrap(),
@@ -163,12 +168,13 @@ impl From<(bool, Option<Child>)> for LinkCable {
                     };
                     lock
                 };
-                println!("Link created");
+
                 LinkCable::Linked {
                     owning: value,
                     receiving: None,
                     status: LinkState::Ready,
-                    channel: mutex,
+                    shmem,
+                    mutex,
                 }
             },
         }
