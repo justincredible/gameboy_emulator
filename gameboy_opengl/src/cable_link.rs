@@ -16,11 +16,11 @@ pub enum LinkState {
 pub enum LinkCable {
     Unlinked,
     Linked {
+        status: LinkState,
         owning: Option<Child>,
         receiving: Option<u8>,
-        status: LinkState,
         shmem: Shmem,
-        mutex: Box<dyn LockImpl>,
+        mutex: (Box<dyn LockImpl>, usize),
     },
 }
 
@@ -29,10 +29,26 @@ impl ByteTransfer for LinkCable {
     fn send(&mut self, byte: u8) {
         match self {
             LinkCable::Unlinked => (),
-            LinkCable::Linked { mutex, .. } => {
-                let mut guard = mutex.lock().unwrap();
-                let val: &mut u8 = unsafe { &mut **guard };
-                *val = byte;
+            LinkCable::Linked { mutex, owning, .. } => {
+                mutex.0.try_lock(Timeout::Val(std::time::Duration::from_micros(1)))
+                    .and_then(|guard| {
+                        let data = unsafe {
+                            &mut *(*guard).add(owning
+                                .as_ref()
+                                .map_or(0, |_| 1))
+                        };
+                        let alert = unsafe {
+                            &mut *(*guard).add(owning
+                                .as_ref()
+                                .map_or(2, |_| 3))
+                        };
+
+                        *data = byte;
+                        *alert = 1;
+
+                        Ok(())
+                    })
+                    .unwrap_or_default();
             },
         }
     }
@@ -53,7 +69,7 @@ impl ByteTransfer for LinkCable {
             LinkCable::Unlinked => (),
             LinkCable::Linked { status, .. } => *status = match status {
                 LinkState::Ready => LinkState::Waiting(0),
-                LinkState::Waiting(c) if *c < 1 => LinkState::Waiting(*c + 1),
+                LinkState::Waiting(c) if *c < 8 => LinkState::Waiting(*c + 1),
                 LinkState::Waiting(_) => LinkState::Ready,
                 _ => LinkState::Disconnected,
             },
@@ -90,12 +106,24 @@ impl ByteTransfer for LinkCable {
     fn received(&mut self) -> bool {
         match self {
             LinkCable::Unlinked => false,
-            LinkCable::Linked { receiving, mutex, .. } => {
-                mutex.try_lock(Timeout::Val(std::time::Duration::from_secs(0)))
-                    .and_then(|mut guard| {
-                        let val: &mut u8 = unsafe { &mut **guard };
+            LinkCable::Linked { mutex, owning, receiving, .. } => {
+                mutex.0.try_lock(Timeout::Val(std::time::Duration::from_micros(1)))
+                    .and_then(|guard| {
+                        let data = unsafe {
+                            &mut *(*guard).add(owning
+                                .as_ref()
+                                .map_or(1, |_| 0))
+                        };
+                        let alert = unsafe {
+                            &mut *(*guard).add(owning
+                                 .as_ref()
+                                 .map_or(3, |_| 2))
+                        };
 
-                        *receiving = Some(*val);
+                        if *alert == 1 {
+                            *receiving = Some(*data);
+                        }
+                        *alert = 0;
 
                         Ok(())
                     })
@@ -118,11 +146,12 @@ impl ByteTransfer for LinkCable {
     fn connect(&mut self) {
         match self {
             LinkCable::Unlinked => (),
-            LinkCable::Linked { .. } => {
-            },
+            LinkCable::Linked { status, .. } => *status = LinkState::Ready,
         }
     }
 }
+
+const SHM_SZ: usize = 48;
 
 impl From<(bool, Option<Child>)> for LinkCable {
 
@@ -130,7 +159,7 @@ impl From<(bool, Option<Child>)> for LinkCable {
         match value {
             (false, None) => LinkCable::Unlinked,
             (_, value) => {
-                let shmem = match ShmemConf::new().size(16).flink("link_cable").create() {
+                let shmem = match ShmemConf::new().size(SHM_SZ).flink("link_cable").create() {
                     Ok(m) => m,
                     Err(ShmemError::LinkExists) => ShmemConf::new().flink("link_cable").open().unwrap(),
                     Err(e) => {
@@ -148,25 +177,31 @@ impl From<(bool, Option<Child>)> for LinkCable {
 
                 let mutex = if shmem.is_owner() {
                     is_init.store(0, Ordering::Relaxed);
-                    let (lock, _) = unsafe {
+                    let mutex = unsafe {
                         Mutex::new(
                             raw_ptr,
                             raw_ptr.add(Mutex::size_of(Some(raw_ptr))),
                         )
                         .unwrap()
                     };
+                    {
+                        let guard = mutex.0.lock().unwrap();
+                        for i in 0..4 {
+                            unsafe { *(*guard).add(i) = 0xFF; }
+                        }
+                    }
                     is_init.store(1, Ordering::Relaxed);
-                    lock
+                    mutex
                 } else {
                     while is_init.load(Ordering::Relaxed) != 1 {}
-                    let (lock, _) = unsafe {
+
+                    unsafe {
                         Mutex::from_existing(
                             raw_ptr,
                             raw_ptr.add(Mutex::size_of(Some(raw_ptr))),
                         )
                         .unwrap()
-                    };
-                    lock
+                    }
                 };
 
                 LinkCable::Linked {

@@ -30,6 +30,8 @@ pub trait ByteTransfer {
             if self.ready() {
                 if sdc.1 & 0x80 == 0x80 {
                     self.send(sdc.0);
+                }
+                if sdc.1 & 0x81 == 0x81 {
                     self.step();
                 }
             }
