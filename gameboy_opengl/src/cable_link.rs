@@ -1,7 +1,10 @@
 use gameboy_core::ByteTransfer;
 
-use std::io::{Read, stdin, stdout, Write};
 use std::process::Child;
+use std::sync::atomic::{AtomicU8, Ordering};
+
+use raw_sync::locks::{LockImpl, LockInit, Mutex};
+use shared_memory::{ShmemConf, ShmemError};
 
 pub enum LinkState {
     Disconnected,
@@ -15,6 +18,7 @@ pub enum LinkCable {
         owning: Option<Child>,
         receiving: Option<u8>,
         status: LinkState,
+        channel: Box<dyn LockImpl>,
     },
 }
 
@@ -23,21 +27,10 @@ impl ByteTransfer for LinkCable {
     fn send(&mut self, byte: u8) {
         match self {
             LinkCable::Unlinked => (),
-            LinkCable::Linked { owning: None, .. } => {
-                // windows may have an issue with stdout
-                stdout()
-                    .write(&[byte])
-                    .expect("error other than interrupted");
-                stdout().flush().expect("I/O error or EOF");
-            },
-            LinkCable::Linked { owning: Some(gameboy), .. } => {
-                let pipe = gameboy.stdin
-                    .as_mut()
-                    .expect("pipe to child stdin");
-                pipe
-                    .write(&[byte])
-                    .expect("error other than interrupted");
-                pipe.flush().expect("I/O error or EOF");
+            LinkCable::Linked { channel, .. } => {
+                let mut guard = channel.lock().unwrap();
+                let val: &mut u8 = unsafe { &mut **guard };
+                *val = byte;
             },
         }
     }
@@ -95,32 +88,11 @@ impl ByteTransfer for LinkCable {
     fn received(&mut self) -> bool {
         match self {
             LinkCable::Unlinked => false,
-            LinkCable::Linked { owning: None, receiving, .. } => {
-                if receiving.is_none() {
-                    let mut buffer = [0];
+            LinkCable::Linked { receiving, channel, .. } => {
+                let mut guard = channel.lock().unwrap();
+                let val: &mut u8 = unsafe { &mut **guard };
 
-                    let result = stdin().read(&mut buffer);
-                    let count = result.expect("a byte");
-                    if count > 0 {
-                        *receiving = Some(buffer[0]);
-                    }
-                }
-
-                receiving.is_some()
-            },
-            LinkCable::Linked { owning: Some(gameboy), receiving, .. } => {
-                if receiving.is_none() {
-                    let mut buffer = [0];
-
-                    let result = gameboy.stdout
-                        .as_mut()
-                        .expect("pipe to child stdout")
-                        .read(&mut buffer);
-                    let count = result.expect("a byte");
-                    if count > 0 {
-                        *receiving = Some(buffer[0]);
-                    }
-                }
+                *receiving = Some(*val);
 
                 receiving.is_some()
             },
@@ -140,36 +112,7 @@ impl ByteTransfer for LinkCable {
     fn connect(&mut self) {
         match self {
             LinkCable::Unlinked => (),
-            LinkCable::Linked { owning: None, status, .. } => {
-                stdout()
-                    .write(&[0xFF])
-                    .expect("stdout piped");
-                stdout().flush().expect("IO error");
-                let mut buffer = [0];
-                let response = stdin()
-                    .read(&mut buffer)
-                    .expect("the same byte value");
-                if response == 0xFF {
-                    *status = LinkState::Ready;
-                }
-            },
-            LinkCable::Linked { owning: Some(gameboy), status, .. } => {
-                let pipe = gameboy.stdin
-                    .as_mut()
-                    .expect("pipe to child stdin");
-                pipe
-                    .write(&[0xFF])
-                    .expect("stdout piped");
-                pipe.flush().expect("IO error");
-                let mut buffer = [0];
-                let response = gameboy.stdout
-                    .as_mut()
-                    .expect("pipe to child stdout")
-                    .read(&mut buffer)
-                    .expect("the same byte value");
-                if response == 0xFF {
-                    *status = LinkState::Ready;
-                }
+            LinkCable::Linked { .. } => {
             },
         }
     }
@@ -180,10 +123,53 @@ impl From<(bool, Option<Child>)> for LinkCable {
     fn from(value: (bool, Option<Child>)) -> Self {
         match value {
             (false, None) => LinkCable::Unlinked,
-            (_, value) => LinkCable::Linked {
-                owning: value,
-                receiving: None,
-                status: LinkState::Disconnected,
+            (_, value) => {
+                println!("Link initialising");
+                let shmem = match ShmemConf::new().size(16).flink("link_cable").create() {
+                    Ok(m) => m,
+                    Err(ShmemError::LinkExists) => ShmemConf::new().flink("link_cable").open().unwrap(),
+                    Err(e) => {
+                        panic!("Unable to create or open shmem flink link_cable : {:?}", e);
+                    },
+                };
+
+                let mut raw_ptr = shmem.as_ptr();
+                let is_init: &mut AtomicU8;
+
+                unsafe {
+                    is_init = &mut *(raw_ptr as *mut u8 as *mut AtomicU8);
+                    raw_ptr = raw_ptr.add(8);
+                }
+
+                let mutex = if shmem.is_owner() {
+                    is_init.store(0, Ordering::Relaxed);
+                    let (lock, _) = unsafe {
+                        Mutex::new(
+                            raw_ptr,
+                            raw_ptr.add(Mutex::size_of(Some(raw_ptr))),
+                        )
+                        .unwrap()
+                    };
+                    is_init.store(1, Ordering::Relaxed);
+                    lock
+                } else {
+                    while is_init.load(Ordering::Relaxed) != 1 {}
+                    let (lock, _) = unsafe {
+                        Mutex::from_existing(
+                            raw_ptr,
+                            raw_ptr.add(Mutex::size_of(Some(raw_ptr))),
+                        )
+                        .unwrap()
+                    };
+                    lock
+                };
+                println!("Link created");
+                LinkCable::Linked {
+                    owning: value,
+                    receiving: None,
+                    status: LinkState::Ready,
+                    channel: mutex,
+                }
             },
         }
     }

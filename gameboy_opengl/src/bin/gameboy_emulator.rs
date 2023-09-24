@@ -33,6 +33,7 @@ fn main() -> Result<(), String> {
                 .arg("--linked")
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
+                .stdout(Stdio::piped())
                 .spawn()
                 .ok()
         });
