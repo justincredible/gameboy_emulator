@@ -30,7 +30,8 @@ impl ByteTransfer for LinkCable {
         match self {
             LinkCable::Unlinked => (),
             LinkCable::Linked { mutex, owning, .. } => {
-                mutex.0.try_lock(Timeout::Val(std::time::Duration::from_micros(1)))
+                //mutex.0.lock()
+                mutex.0.try_lock(Timeout::Val(std::time::Duration::from_nanos(1)))
                     .and_then(|guard| {
                         let data = unsafe {
                             &mut *(*guard).add(owning
@@ -43,8 +44,10 @@ impl ByteTransfer for LinkCable {
                                 .map_or(2, |_| 3))
                         };
 
-                        *data = byte;
-                        *alert = 1;
+                        if *alert != 1 {
+                            *data = byte;
+                            *alert = 1;
+                        }
 
                         Ok(())
                     })
@@ -69,7 +72,7 @@ impl ByteTransfer for LinkCable {
             LinkCable::Unlinked => (),
             LinkCable::Linked { status, .. } => *status = match status {
                 LinkState::Ready => LinkState::Waiting(0),
-                LinkState::Waiting(c) if *c < 8 => LinkState::Waiting(*c + 1),
+                LinkState::Waiting(c) if *c < 1 => LinkState::Waiting(*c + 1),
                 LinkState::Waiting(_) => LinkState::Ready,
                 _ => LinkState::Disconnected,
             },
@@ -107,7 +110,8 @@ impl ByteTransfer for LinkCable {
         match self {
             LinkCable::Unlinked => false,
             LinkCable::Linked { mutex, owning, receiving, .. } => {
-                mutex.0.try_lock(Timeout::Val(std::time::Duration::from_micros(1)))
+                //mutex.0.lock()
+                mutex.0.try_lock(Timeout::Val(std::time::Duration::from_nanos(1)))
                     .and_then(|guard| {
                         let data = unsafe {
                             &mut *(*guard).add(owning
@@ -122,8 +126,8 @@ impl ByteTransfer for LinkCable {
 
                         if *alert == 1 {
                             *receiving = Some(*data);
+                            *alert = 0;
                         }
-                        *alert = 0;
 
                         Ok(())
                     })
