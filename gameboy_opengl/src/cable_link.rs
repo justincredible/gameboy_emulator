@@ -7,6 +7,7 @@ use raw_sync::locks::{LockImpl, LockInit, Mutex};
 use raw_sync::Timeout;
 use shared_memory::{Shmem, ShmemConf, ShmemError};
 
+#[derive(Clone, Copy)]
 pub enum LinkState {
     Disconnected,
     Ready,
@@ -36,17 +37,23 @@ impl ByteTransfer for LinkCable {
                         let data = unsafe {
                             &mut *(*guard).add(owning
                                 .as_ref()
-                                .map_or(0, |_| 1))
+                                .map_or(1, |_| 0))
                         };
-                        let alert = unsafe {
+                        let alert_self = unsafe {
+                            &mut *(*guard).add(owning
+                                .as_ref()
+                                .map_or(3, |_| 2))
+                        };
+                        let alert_other = unsafe {
                             &mut *(*guard).add(owning
                                 .as_ref()
                                 .map_or(2, |_| 3))
                         };
 
-                        if *alert != 1 {
+                        if *alert_self != 2 {
                             *data = byte;
-                            *alert = 1;
+                            *alert_self = 2;
+                            *alert_other = 1;
                         }
 
                         Ok(())
@@ -70,10 +77,30 @@ impl ByteTransfer for LinkCable {
     fn step(&mut self) {
         match self {
             LinkCable::Unlinked => (),
-            LinkCable::Linked { status, .. } => *status = match status {
+            LinkCable::Linked { mutex, status, owning, .. } => *status = match status {
                 LinkState::Ready => LinkState::Waiting(0),
-                LinkState::Waiting(c) if *c < 1 => LinkState::Waiting(*c + 1),
-                LinkState::Waiting(_) => LinkState::Ready,
+                LinkState::Waiting(0) => mutex.0.lock().map_or(*status, |mut guard| {
+                    let a = unsafe { &mut **guard };
+                    let b = unsafe { &mut *(*guard).add(1) };
+
+                    let temp = *a;
+                    *a = *b;
+                    *b = temp;
+
+                    LinkState::Waiting(1)
+                }),
+                LinkState::Waiting(c) if *c < 8 => LinkState::Waiting(*c + 1),
+                LinkState::Waiting(_) => mutex.0.lock().map_or(*status, |guard| {
+                    let alert_self = unsafe {
+                        &mut *(*guard).add(owning
+                            .as_ref()
+                            .map_or(3, |_| 2))
+                    };
+
+                    *alert_self = 0;
+
+                    LinkState::Ready
+                }),
                 _ => LinkState::Disconnected,
             },
         }
@@ -82,7 +109,19 @@ impl ByteTransfer for LinkCable {
     fn reset(&mut self) {
         match self {
             LinkCable::Unlinked => (),
-            LinkCable::Linked { status, .. } => *status = LinkState::Ready,
+            LinkCable::Linked { status, mutex, owning, .. } => {
+                *status = mutex.0.lock().map_or(*status, |guard| {
+                    let alert_self = unsafe {
+                        &mut *(*guard).add(owning
+                            .as_ref()
+                            .map_or(3, |_| 2))
+                    };
+
+                    *alert_self = 0;
+
+                    LinkState::Ready
+                })
+            },
         }
     }
 
