@@ -7,7 +7,7 @@ pub trait ByteTransfer {
 
     fn send(&mut self, d: u8, c: u8);
 
-    fn receive(&self) -> Option<(u8, u8)>;
+    fn receive(&mut self) -> Option<(u8, u8)>;
 
     fn ready(&self) -> bool;
 
