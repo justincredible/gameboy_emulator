@@ -4,7 +4,6 @@ use std::process::Child;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use raw_sync::locks::{LockImpl, LockInit, Mutex};
-use raw_sync::Timeout;
 use shared_memory::{Shmem, ShmemConf, ShmemError};
 
 pub enum LinkCable {
@@ -13,16 +12,88 @@ pub enum LinkCable {
         owning: Option<Child>,
         shmem: Shmem,
         mutex: (Box<dyn LockImpl>, usize),
-        status: LinkState
+        last_state: [u8; 6],
     },
 }
 
-#[derive(PartialEq)]
-pub enum LinkState {
-    Ready,
-    Receiving,
-    Transferring,
-    Disconnected,
+impl LinkCable {
+    fn transfer(&mut self) {
+        match self {
+            LinkCable::Unlinked => (),
+            LinkCable::Linked { mutex, owning, last_state, .. } => mutex.0
+                .lock()
+                //.try_lock(Timeout::Val(std::time::Duration::from_secs(0)))
+                .map_or((), |guard| {
+                    let dp = unsafe {
+                        &mut *(*guard).add(owning
+                            .as_ref()
+                            .map_or(4, |_| 0))
+                    };
+                    let bp = unsafe {
+                        &mut *(*guard).add(owning
+                            .as_ref()
+                            .map_or(0, |_| 4))
+                    };
+                    let cp = unsafe {
+                        &mut *(*guard).add(owning
+                            .as_ref()
+                            .map_or(5, |_| 1))
+                    };
+                    let ep = unsafe {
+                        &mut *(*guard).add(owning
+                            .as_ref()
+                            .map_or(1, |_| 5))
+                    };
+                    let sp = unsafe {
+                        &mut *(*guard).add(owning
+                            .as_ref()
+                            .map_or(6, |_| 2))
+                    };
+                    let zp = unsafe {
+                        &mut *(*guard).add(owning
+                            .as_ref()
+                            .map_or(2, |_| 6))
+                    };
+
+                    let state = [*dp, *cp, *sp, *bp, *ep, *zp];
+                    if &state != last_state {
+                        println!("{:?} {:x?} {:?} {:?} {:x?} {:?}", *dp, *cp, *sp, *bp, *ep, *zp);
+                        *last_state = state;
+                    }
+
+                    match (*sp, *cp, *zp, *ep) {
+                        (0, 0, 0, 0) | (0, 0x7E, 0, 0) | (0, 0, 0, 0x7E) => (),
+                        (2, _, _, _) | (_, _, 2, _) => (),
+                        (0, 0x81, _, _) | (0, 0x80, _, _) => *sp = 1,
+                        (1, 0x81, 0, _) | (1, 0x81, 1, _) | (0, _, 1, 0x81) | (1, _, 1, 0x81) => {
+                            let temp = *dp;
+
+                            *dp = *bp;
+                            *bp = temp;
+
+                            *sp = 2;
+                            *cp &= 0x7F;
+                            *zp = 2;
+                            *ep &= 0x7F;
+                        },
+                        (1, _, 1, _) => {
+                            *sp = 2;
+                            *zp = 2;
+                        },
+                        (0, _, 0, _) | (0, _, 1, _) | (1, _, 0, _) => (),
+                        (255, _, _, _) | (_, _, 255, _) => {
+                            *dp = 0;
+                            *bp = 0;
+                            *cp = 0;
+                            *ep = 0;
+                            *sp = 0;
+                            *zp = 0;
+                        },
+                        _ => println!("Unexpected state: {:?} {:x?} {:?} {:x?}", *sp, *cp, *zp, *ep),
+                    }
+                }),
+        }
+    }
 }
 
 impl ByteTransfer for LinkCable {
@@ -30,37 +101,64 @@ impl ByteTransfer for LinkCable {
     fn send(&mut self, data: u8, control: u8) {
         match self {
             LinkCable::Unlinked => (),
-            LinkCable::Linked { mutex, owning, status, .. } => mutex.0
-                .lock()
-                .map_or((), |guard| {
-                    let dp = unsafe {
-                        &mut *(*guard).add(owning
-                            .as_ref()
-                            .map_or(4, |_| 0))
-                    };
-                    let cp = unsafe {
-                        &mut *(*guard).add(owning
-                            .as_ref()
-                            .map_or(5, |_| 1))
-                    };
+            LinkCable::Linked { mutex, owning, .. } => {
+                let status = mutex.0
+                    .lock()
+                    //.try_lock(Timeout::Val(std::time::Duration::from_secs(0)))
+                    .map_or(2, |guard| {
+                        let sp = unsafe {
+                            &mut *(*guard).add(owning
+                                .as_ref()
+                                .map_or(6, |_| 2))
+                        };
+                        let zp = unsafe {
+                            &mut *(*guard).add(owning
+                                .as_ref()
+                                .map_or(2, |_| 6))
+                        };
 
-                    *dp = data;
-                    *cp = control;
+                        if *sp == 0 {
+                            let dp = unsafe {
+                                &mut *(*guard).add(owning
+                                    .as_ref()
+                                    .map_or(4, |_| 0))
+                            };
+                            let cp = unsafe {
+                                &mut *(*guard).add(owning
+                                    .as_ref()
+                                    .map_or(5, |_| 1))
+                            };
 
-                    if control == 0x81 {
-                        *status = LinkState::Transferring;
-                    }
-                }),
+                            *dp = data;
+                            *cp = control;
+                        }
+
+                        *sp
+                    });
+
+                if status != 2 {
+                    self.transfer();
+                }
+            }
         }
     }
 
-    fn receive(&mut self) -> Option<(u8, u8)> {
+    fn receive(&self) -> Option<(u8, u8)> {
         match self {
             LinkCable::Unlinked => Some((0xFF, 0xFF)),
-            LinkCable::Linked { mutex, owning, status, .. } => if *status == LinkState::Receiving {
-                mutex.0
-                    .lock()
-                    .map_or(None, |guard| {
+            LinkCable::Linked { mutex, owning, .. } => mutex.0
+                .lock()
+                //.try_lock(Timeout::Val(std::time::Duration::from_secs(0)))
+                .map_or(None, |guard| {
+                    let status = unsafe {
+                        &mut *(*guard).add(owning
+                            .as_ref()
+                            .map_or(6, |_| 2))
+                    };
+
+                    if *status == 2 {
+                        *status = 0;
+
                         let data = unsafe {
                             &mut *(*guard).add(owning
                                 .as_ref()
@@ -69,128 +167,21 @@ impl ByteTransfer for LinkCable {
                         let control = unsafe {
                             &mut *(*guard).add(owning
                                 .as_ref()
-                            .map_or(5, |_| 1))
+                                .map_or(5, |_| 1))
                         };
-                        let status_self = unsafe {
-                            &mut *(*guard).add(owning
-                                .as_ref()
-                                .map_or(6, |_| 2))
-                        };
-
-                        *status_self = 0;
-                        *status = LinkState::Ready;
 
                         Some((*data, *control))
-                    })
-            } else {
-                None
-            },
-        }
-    }
-
-    fn step(&mut self) {
-        match self {
-            LinkCable::Unlinked => (),
-            LinkCable::Linked { mutex, owning, status, .. } => mutex.0
-                .try_lock(Timeout::Val(std::time::Duration::from_secs(0)))
-                .map_or((), |guard| {
-                    let data_self = unsafe {
-                        &mut *(*guard).add(owning
-                            .as_ref()
-                            .map_or(4, |_| 0))
-                    };
-                    let data_other = unsafe {
-                        &mut *(*guard).add(owning
-                            .as_ref()
-                            .map_or(0, |_| 4))
-                    };
-                    let ctrl_self = unsafe {
-                        &mut *(*guard).add(owning
-                            .as_ref()
-                            .map_or(5, |_| 1))
-                    };
-                    let ctrl_other = unsafe {
-                        &mut *(*guard).add(owning
-                            .as_ref()
-                            .map_or(1, |_| 5))
-                    };
-                    let status_self = unsafe {
-                        &mut *(*guard).add(owning
-                            .as_ref()
-                            .map_or(6, |_| 2))
-                    };
-                    let status_other = unsafe {
-                        &mut *(*guard).add(owning
-                            .as_ref()
-                            .map_or(2, |_| 6))
-                    };
-
-                    let state = (*ctrl_self, *ctrl_other, *status_self, *status_other);
-                    match state {
-                        (0x80, 0x80, 0, 0)
-                        | (0x80, 0, 0, 0) | (0, 0x80, 0, 0)
-                        | (0x80, 1, 0, 0) | (1, 0x80, 0, 0) => (),
-                        (0x81, 0x81, 0, 0)
-                        | (0x81, 0x80, 0, 0) | (0x80, 0x81, 0, 0)
-                        | (0x81, 0, 0, 0) | (0, 0x81, 0, 0)
-                        | (0x81, 1, 0, 0) | (1, 0x81, 0, 0) => {
-                            *status_self = 1;
-                            *status_other = 1;
-                        },
-                        (0x81, 0x81, 1, 1)
-                        | (0x81, 0x80, 1, 1) | (0x80, 0x81, 1, 1)
-                        | (0x81, 0, 1, 1) | (0, 0x81, 1, 1)
-                        | (0x81, 1, 1, 1) | (1, 0x81, 1, 1) => {
-                            let temp = *data_self;
-                            *data_self = *data_other;
-                            *data_other = temp;
-
-                            if *ctrl_self == 0x81 {
-                                *status_other = 2;
-                            }
-                            if *ctrl_other == 0x81 {
-                                *status_self = 2;
-                            }
-
-                        },
-                        (_, _, 1, 0) => {
-                            *status_self = 0;
-                            *status = LinkState::Ready;
-                        },
-                        (_, _, 0, 1) => (),
-                        (_, _, 2, _) => *status = LinkState::Receiving,
-                        (_, _, _, 2) => (),
-                        (_, _, 0xFF, 0xFF) => {
-                            *data_self = 0;
-                            *data_other = 0;
-                            *ctrl_self = 0;
-                            *ctrl_other = 0;
-                            *status_self = 0;
-                            *status_other = 0;
-                        },
-                        (0, 0, 0, 0)
-                        | (1, 0, 0, 0) | (0, 1, 0, 0)
-                        | (0x7E, 0, 0, 0) | (0, 0x7E, 0, 0) => (),
-                        _ => {
-                            println!("Unexpected state: {:?}", state);
-                        },
+                    } else {
+                        None
                     }
-
-                }),
-        }
-    }
-
-    fn ready(&self) -> bool {
-        match self {
-            LinkCable::Unlinked => false,
-            LinkCable::Linked { status, .. } => *status == LinkState::Ready,
+                })
         }
     }
 
     fn disconnected(&self) -> bool {
         match self {
             LinkCable::Unlinked => true,
-            LinkCable::Linked { status, .. } => *status == LinkState::Disconnected,
+            LinkCable::Linked { .. } => false,
         }
     }
 }
@@ -252,7 +243,7 @@ impl From<(bool, Option<Child>)> for LinkCable {
                     owning: value,
                     shmem,
                     mutex,
-                    status: LinkState::Ready,
+                    last_state: [0; 6],
                 }
             },
         }

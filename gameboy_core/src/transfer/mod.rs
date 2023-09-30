@@ -3,20 +3,14 @@ use crate::mmu::interrupt::Interrupt;
 
 pub trait ByteTransfer {
 
-    fn step(&mut self);
-
     fn send(&mut self, d: u8, c: u8);
 
-    fn receive(&mut self) -> Option<(u8, u8)>;
-
-    fn ready(&self) -> bool;
+    fn receive(&self) -> Option<(u8, u8)>;
 
     fn disconnected(&self) -> bool;
 
     fn update(&mut self, mmu: &mut Memory) {
-        if self.ready() {
-            self.send(mmu.read_byte(0xFF01), mmu.read_byte(0xFF02));
-        }
+        self.send(mmu.read_byte(0xFF01), mmu.read_byte(0xFF02));
 
         self.receive()
             .map_or((), |(data, control)| {
@@ -27,7 +21,5 @@ pub trait ByteTransfer {
                 mmu.write_byte(0xFF02, control & 0x7F);
                 mmu.request_interrupt(Interrupt::Serial);
             });
-
-        self.step();
     }
 }
