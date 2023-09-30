@@ -54,6 +54,16 @@ impl LinkCable {
                             .as_ref()
                             .map_or(2, |_| 6))
                     };
+                    let tp = unsafe {
+                        &mut *(*guard).add(owning
+                            .as_ref()
+                            .map_or(7, |_| 3))
+                    };
+                    let ip = unsafe {
+                        &mut *(*guard).add(owning
+                            .as_ref()
+                            .map_or(3, |_| 7))
+                    };
 
                     let state = [*dp, *cp, *sp, *bp, *ep, *zp];
                     if &state != last_state {
@@ -64,30 +74,48 @@ impl LinkCable {
                     match (*sp, *cp, *zp, *ep) {
                         (0, 0, 0, 0) | (0, 0x7E, 0, 0) | (0, 0, 0, 0x7E) => (),
                         (2, _, _, _) | (_, _, 2, _) => (),
-                        (0, 0x81, _, _) | (0, 0x80, _, _) => *sp = 1,
-                        (1, 0x81, 0, _) | (1, 0x81, 1, _) | (0, _, 1, 0x81) | (1, _, 1, 0x81) => {
-                            let temp = *dp;
-
-                            *dp = *bp;
-                            *bp = temp;
-
-                            *sp = 2;
-                            *cp &= 0x7F;
-                            *zp = 2;
-                            *ep &= 0x7F;
+                        (0, 0x80, 0, _) | (0, 0x80, 1, _) => {
+                            *sp = 1;
                         },
+                        (0, 0x81, 0, _) | (0, 0x81, 1, _) => {
+                            *sp = 1;
+                            *zp = 1;
+                            *ep = 0x80;
+                            *tp = 0;
+                            println!("Before: {:?} {:x?} {:?} {:?} {:x?} {:?}", *dp, *cp, *sp, *bp, *ep, *zp);
+                        },
+                        (0, _, 0, _) => (),
+                        (1, 0x81, 1, 0x80) => {
+                            if *tp < 1 {
+                                *tp += 1;
+                            } else {
+                                let temp = *dp;
+
+                                *dp = *bp;
+                                *bp = temp;
+
+                                *sp = 2;
+                                *cp &= 0x7F;
+                                *zp = 2;
+                                *ep &= 0x7F;
+                                println!("After: {:?} {:x?} {:?} {:?} {:x?} {:?}", *dp, *cp, *sp, *bp, *ep, *zp);
+                            }
+                        },
+                        (1, 0x80, 1, 0x81) => (),
+                        (1, 0x80, 0, _) | (0, _, 1, 0x80) => (),
                         (1, _, 1, _) => {
-                            *sp = 2;
-                            *zp = 2;
-                        },
-                        (0, _, 0, _) | (0, _, 1, _) | (1, _, 0, _) => (),
-                        (255, _, _, _) | (_, _, 255, _) => {
-                            *dp = 0;
-                            *bp = 0;
-                            *cp = 0;
-                            *ep = 0;
                             *sp = 0;
                             *zp = 0;
+                        }
+                        (255, _, _, _) | (_, _, 255, _) => {
+                            *dp = 0;
+                            *cp = 0;
+                            *sp = 0;
+                            *tp = 0;
+                            *bp = 0;
+                            *ep = 0;
+                            *zp = 0;
+                            *ip = 0;
                         },
                         _ => println!("Unexpected state: {:?} {:x?} {:?} {:x?}", *sp, *cp, *zp, *ep),
                     }
@@ -110,11 +138,6 @@ impl ByteTransfer for LinkCable {
                             &mut *(*guard).add(owning
                                 .as_ref()
                                 .map_or(6, |_| 2))
-                        };
-                        let zp = unsafe {
-                            &mut *(*guard).add(owning
-                                .as_ref()
-                                .map_or(2, |_| 6))
                         };
 
                         if *sp == 0 {
