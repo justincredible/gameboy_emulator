@@ -5,21 +5,24 @@ pub trait ByteTransfer {
 
     fn send(&mut self, d: u8, c: u8);
 
-    fn receive(&self) -> Option<(u8, u8)>;
+    fn receive(&self) -> (bool, u8, u8);
 
     fn disconnected(&self) -> bool;
 
     fn update(&mut self, mmu: &mut Memory) {
         self.send(mmu.read_byte(0xFF01), mmu.read_byte(0xFF02));
 
-        self.receive()
-            .map_or((), |(data, control)| {
-                mmu.write_byte(0xFF01, data);
-                if self.disconnected() {
-                    mmu.write_byte(0xFF01, 0xFF);
-                }
-                mmu.write_byte(0xFF02, control & 0x7F);
-                mmu.request_interrupt(Interrupt::Serial);
-            });
+        let (interrupt, data, control) = self.receive();
+
+        mmu.write_byte(0xFF01, data);
+        mmu.write_byte(0xFF02, control);
+
+        if interrupt {
+            mmu.request_interrupt(Interrupt::Serial);
+        }
+
+        if self.disconnected() {
+            mmu.write_byte(0xFF01, 0xFF);
+        }
     }
 }
