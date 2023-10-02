@@ -3,7 +3,7 @@ use gameboy_core::ByteTransfer;
 use std::process::Child;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use raw_sync::locks::{LockImpl, LockInit, Mutex};
+use raw_sync::locks::{LockGuard, LockImpl, LockInit, Mutex};
 use shared_memory::{Shmem, ShmemConf, ShmemError};
 
 pub enum LinkCable {
@@ -16,105 +16,87 @@ pub enum LinkCable {
 }
 
 impl LinkCable {
-    fn transfer(&mut self) {
-        match self {
-            LinkCable::Unlinked => (),
-            LinkCable::Linked { mutex, owning, .. } => mutex.0
-                .lock()
-                //.try_lock(Timeout::Val(std::time::Duration::from_secs(0)))
-                .map_or((), |guard| {
-                    let dp = unsafe {
-                        &mut *(*guard).add(owning
-                            .as_ref()
-                            .map_or(4, |_| 0))
-                    };
-                    let bp = unsafe {
-                        &mut *(*guard).add(owning
-                            .as_ref()
-                            .map_or(0, |_| 4))
-                    };
-                    let cp = unsafe {
-                        &mut *(*guard).add(owning
-                            .as_ref()
-                            .map_or(5, |_| 1))
-                    };
-                    let ep = unsafe {
-                        &mut *(*guard).add(owning
-                            .as_ref()
-                            .map_or(1, |_| 5))
-                    };
-                    let sp = unsafe {
-                        &mut *(*guard).add(owning
-                            .as_ref()
-                            .map_or(6, |_| 2))
-                    };
-                    let zp = unsafe {
-                        &mut *(*guard).add(owning
-                            .as_ref()
-                            .map_or(2, |_| 6))
-                    };
-                    let tp = unsafe {
-                        &mut *(*guard).add(owning
-                            .as_ref()
-                            .map_or(7, |_| 3))
-                    };
-                    let ip = unsafe {
-                        &mut *(*guard).add(owning
-                            .as_ref()
-                            .map_or(3, |_| 7))
-                    };
+    fn transfer(owning: &mut Option<Child>, guard: LockGuard<'_>) {
+        let dp = unsafe {
+            &mut *(*guard).add(owning
+                .as_ref()
+                .map_or(4, |_| 0))
+        };
+        let bp = unsafe {
+            &mut *(*guard).add(owning
+                .as_ref()
+                .map_or(0, |_| 4))
+        };
+        let cp = unsafe {
+            &mut *(*guard).add(owning
+                .as_ref()
+                .map_or(5, |_| 1))
+        };
+        let ep = unsafe {
+            &mut *(*guard).add(owning
+                .as_ref()
+                .map_or(1, |_| 5))
+        };
+        let sp = unsafe {
+            &mut *(*guard).add(owning
+                .as_ref()
+                .map_or(6, |_| 2))
+        };
+        let zp = unsafe {
+            &mut *(*guard).add(owning
+                .as_ref()
+                .map_or(2, |_| 6))
+        };
+        let tp = unsafe {
+            &mut *(*guard).add(owning
+                .as_ref()
+                .map_or(7, |_| 3))
+        };
+        let ip = unsafe {
+            &mut *(*guard).add(owning
+                .as_ref()
+                .map_or(3, |_| 7))
+        };
 
-                    match (*sp, *cp, *zp, *ep) {
-                        //(0, 0, 0, 0) | (0, 0x7E, 0, 0) | (0, 0, 0, 0x7E) => (),
-                        (0, 0x81, 0, 0x80) | (0, 0x81, 0, 0x81) => {
-                            *sp = 1;
-                            *zp = 1;
+        match (*sp, *cp, *zp, *ep) {
+            (0, 0x81, 0, 0x80) | (0, 0x81, 0, 0x81) => {
+                *sp = 2;
+                *zp = 2;
 
-                            *tp = 0;
-                            *ip = 0;
-                        },
-                        (1, 0x81, 1, 0x80) | (1, 0x81, 1, 0x81) => {
-                            if *tp == 0 && *ip == 0 {
-                                let a = *dp;
-                                let b = *bp;
+                *tp = 1;
+                *ip = 0;
 
-                                if *ep == 0x81 {
-                                    *dp = b;
-                                }
-                                *bp = a;
-                            } else {
-                                if *ep == 0x81 {
-                                    *sp = 2;
-                                    *cp &= 0x7F;
-                                }
-                                *zp = 2;
-                                *ep &= 0x7F;
-                            }
+                let a = *dp;
+                let b = *bp;
 
-                            *tp += 1;
-                            if *ep == 1 {
-                                *ip += 1;
-                            }
-                        },
-                        (255, _, _, _) | (_, _, 255, _) => {
-                            *dp = 0;
-                            *cp = 0;
-                            *sp = 0;
-                            *tp = 0;
-                            *bp = 0;
-                            *ep = 0;
-                            *zp = 0;
-                            *ip = 0;
-                        },
-                        _ => (),
-                    }
-
-                    if *tp == 2 && *ep & 0x80 == 0x80 {
-                        *dp = *bp;
-                        *sp = 2;
-                        *cp &= 0x7F;
-                    }
-                }),
+                /*if *ep == 0x81 {
+                    *dp = b;
+                    *sp = 2;
+                    *cp &= 0x7F;
+                } else {*/
+                    *sp = 1;
+                //}
+                *bp = a;
+                *zp = 2;
+                *ep &= 0x7F;
+            },
+            (_, _, _, 0x80) if *tp == 1 => {
+                *dp = *bp;
+                *sp = 2;
+                *cp &= 0x7F;
+                *tp = 0;
+            },
+            (255, _, _, _) | (_, _, 255, _) => {
+                *dp = 0;
+                *cp = 0;
+                *sp = 0;
+                *tp = 0;
+                *bp = 0;
+                *ep = 0;
+                *zp = 0;
+                *ip = 0;
+            },
+            _ => (),
         }
     }
 }
@@ -124,36 +106,34 @@ impl ByteTransfer for LinkCable {
     fn send(&mut self, data: u8, control: u8) {
         match self {
             LinkCable::Unlinked => (),
-            LinkCable::Linked { mutex, owning, .. } => {
-                mutex.0
-                    .lock()
-                    //.try_lock(Timeout::Val(std::time::Duration::from_secs(0)))
-                    .map_or((), |guard| {
-                        let sp = unsafe {
+            LinkCable::Linked { mutex, owning, .. } => mutex.0
+                .lock()
+                //.try_lock(Timeout::Val(std::time::Duration::from_secs(0)))
+                .map_or((), |guard| {
+                    let sp = unsafe {
+                        &mut *(*guard).add(owning
+                            .as_ref()
+                            .map_or(6, |_| 2))
+                    };
+
+                    if *sp == 0 {
+                        let dp = unsafe {
                             &mut *(*guard).add(owning
                                 .as_ref()
-                                .map_or(6, |_| 2))
+                                .map_or(4, |_| 0))
+                        };
+                        let cp = unsafe {
+                            &mut *(*guard).add(owning
+                                .as_ref()
+                                .map_or(5, |_| 1))
                         };
 
-                        if *sp == 0 {
-                            let dp = unsafe {
-                                &mut *(*guard).add(owning
-                                    .as_ref()
-                                    .map_or(4, |_| 0))
-                            };
-                            let cp = unsafe {
-                                &mut *(*guard).add(owning
-                                    .as_ref()
-                                    .map_or(5, |_| 1))
-                            };
+                        *dp = data;
+                        *cp = control;
+                    }
 
-                            *dp = data;
-                            *cp = control;
-                        }
-                    });
-
-                self.transfer();
-            }
+                    LinkCable::transfer(owning, guard);
+                }),
         }
     }
 
@@ -188,7 +168,7 @@ impl ByteTransfer for LinkCable {
                     if *status > 0 {
                         if *status == 2 {
                             *status = 0;
-                            *counter = 0;
+                            //*counter = 0;
 
                             Some((true, *data, *control))
                         } else {
