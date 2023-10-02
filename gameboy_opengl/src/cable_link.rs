@@ -73,52 +73,43 @@ impl LinkCable {
 
                     match (*sp, *cp, *zp, *ep) {
                         (0, 0, 0, 0) | (0, 0x7E, 0, 0) | (0, 0, 0, 0x7E) => (),
-                        (2, _, 0, _) | (0, _, 2, _) | (1, _, 2, _) => (),
-                        (0, 0x81, 0, _) | (0, _, 0, 0x81) => {
+                        (0, 0x81, 0, 0x80) | (0, 0x81, 0, 0x81) => {
                             *sp = 1;
                             *zp = 1;
                             *tp = 0;
                             *ip = 0;
-                            println!("Before: {:?} {:x?} {:?} {:?} {:x?} {:?}", *dp, *cp, *tp, *bp, *ep, *ip);
-                        },
-                        (0, _, 0, _) => (),
-                        (1, _, 1, _) => {
-                            if *tp < 1 {
-                                let a = *dp;
-                                let b = *bp;
-                                println!("After: {:?} {:x?} {:?} {:?} {:x?} {:?}", *dp, *cp, *tp, *bp, *ep, *ip);
 
-                                if *sp == 0x81 {
-                                    *bp = a;
-                                }
-                                if *zp == 0x81 {
-                                    *dp = b;
-                                }
-                                *sp = 2;
-                                *cp &= 0x7F;
+                            let a = *dp;
+                            let b = *bp;
+
+                            if *cp == 0x81 {
+                                *bp = a;
+                            }
+                            if *ep == 0x81 {
+                                *dp = b;
+                            }
+
+                            *tp += 1;
+                            *ip += 1;
+                        },
+                        (1, 0x81, 1, 0x80) | (1, 0x81, 1, 0x81) => {
+                            if *cp == 0x81 {
                                 *zp = 2;
                                 *ep &= 0x7F;
-
-                                *tp += 1;
-                                *ip += 1;
+                                *tp = 8;
                             }
-                            /*if *tp < 8 {
-                                let a = *dp;
-                                let b = *bp;
-
-                                *dp = a << 1 | b >> 7;
-                                *bp = b << 1 | a >> 7;
-
-                                *tp += 1;
-                                *ip += 1;
-                            } else {
-                                println!("After: {:?} {:x?} {:?} {:?} {:x?} {:?}", *dp, *cp, *tp, *bp, *ep, *ip);
+                            if *ep == 0x81 {
                                 *sp = 2;
-                                *cp &= 0x7Fu8;
-                                *zp = 2;
-                                *ep &= 0x7Fu8;
-                            }*/
+                                *cp &= 0x7F;
+                                *ip = 8;
+                            }
                         },
+                        (_, _, _, 0x80) if *tp == 8 => {
+                            *dp = *bp;
+                            *sp = 2;
+                            *cp &= 0x7F;
+                        },
+                        (0, _, 0, _) | (1, _, 1, _) | (0, _, 1, _) | (1, _, 2, _) => (),
                         (255, _, _, _) | (_, _, 255, _) => {
                             *dp = 0;
                             *cp = 0;
@@ -142,10 +133,10 @@ impl ByteTransfer for LinkCable {
         match self {
             LinkCable::Unlinked => (),
             LinkCable::Linked { mutex, owning, .. } => {
-                let status = mutex.0
+                mutex.0
                     .lock()
                     //.try_lock(Timeout::Val(std::time::Duration::from_secs(0)))
-                    .map_or(2, |guard| {
+                    .map_or((), |guard| {
                         let sp = unsafe {
                             &mut *(*guard).add(owning
                                 .as_ref()
@@ -167,26 +158,20 @@ impl ByteTransfer for LinkCable {
                             *dp = data;
                             *cp = control;
                         }
-
-                        *sp
                     });
 
-                if status != 2 {
-                    self.transfer();
-                }
+                self.transfer();
             }
         }
     }
 
-    fn receive(&self) -> (bool, u8, u8) {
-        let default = (false, 0xFF, 0);
-
+    fn receive(&self) -> Option<(bool, u8, u8)> {
         match self {
-            LinkCable::Unlinked => default,
+            LinkCable::Unlinked => None,
             LinkCable::Linked { mutex, owning, .. } => mutex.0
                 .lock()
                 //.try_lock(Timeout::Val(std::time::Duration::from_secs(0)))
-                .map_or(default, |guard| {
+                .map_or(None, |guard| {
                     let data = unsafe {
                         &mut *(*guard).add(owning
                             .as_ref()
@@ -202,13 +187,23 @@ impl ByteTransfer for LinkCable {
                             .as_ref()
                             .map_or(6, |_| 2))
                     };
+                    let counter = unsafe {
+                        &mut *(*guard).add(owning
+                            .as_ref()
+                            .map_or(7, |_| 3))
+                    };
 
-                    if *status == 2 {
-                        *status = 0;
+                    if *status > 0 {
+                        if *status == 2 {
+                            *status = 0;
+                            *counter = 0;
 
-                        (true, *data, *control)
+                            Some((true, *data, *control))
+                        } else {
+                            Some((false, *data, *control))
+                        }
                     } else {
-                        (false, *data, *control)
+                        None
                     }
                 })
         }
