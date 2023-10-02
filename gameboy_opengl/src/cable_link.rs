@@ -12,7 +12,6 @@ pub enum LinkCable {
         owning: Option<Child>,
         shmem: Shmem,
         mutex: (Box<dyn LockImpl>, usize),
-        last_state: [u8; 6],
     },
 }
 
@@ -20,7 +19,7 @@ impl LinkCable {
     fn transfer(&mut self) {
         match self {
             LinkCable::Unlinked => (),
-            LinkCable::Linked { mutex, owning, last_state, .. } => mutex.0
+            LinkCable::Linked { mutex, owning, .. } => mutex.0
                 .lock()
                 //.try_lock(Timeout::Val(std::time::Duration::from_secs(0)))
                 .map_or((), |guard| {
@@ -65,51 +64,38 @@ impl LinkCable {
                             .map_or(3, |_| 7))
                     };
 
-                    let state = [*dp, *cp, *sp, *bp, *ep, *zp];
-                    if &state != last_state {
-                        println!("Owning: {:?}\nData: {:?} {:x?} {:?} {:?} {:x?} {:?}", owning.is_some(), *dp, *cp, *sp, *bp, *ep, *zp);
-                        *last_state = state;
-                    }
-
                     match (*sp, *cp, *zp, *ep) {
-                        (0, 0, 0, 0) | (0, 0x7E, 0, 0) | (0, 0, 0, 0x7E) => (),
+                        //(0, 0, 0, 0) | (0, 0x7E, 0, 0) | (0, 0, 0, 0x7E) => (),
                         (0, 0x81, 0, 0x80) | (0, 0x81, 0, 0x81) => {
                             *sp = 1;
                             *zp = 1;
+
                             *tp = 0;
                             *ip = 0;
+                        },
+                        (1, 0x81, 1, 0x80) | (1, 0x81, 1, 0x81) => {
+                            if *tp == 0 && *ip == 0 {
+                                let a = *dp;
+                                let b = *bp;
 
-                            let a = *dp;
-                            let b = *bp;
-
-                            if *cp == 0x81 {
+                                if *ep == 0x81 {
+                                    *dp = b;
+                                }
                                 *bp = a;
-                            }
-                            if *ep == 0x81 {
-                                *dp = b;
+                            } else {
+                                if *ep == 0x81 {
+                                    *sp = 2;
+                                    *cp &= 0x7F;
+                                }
+                                *zp = 2;
+                                *ep &= 0x7F;
                             }
 
                             *tp += 1;
-                            *ip += 1;
-                        },
-                        (1, 0x81, 1, 0x80) | (1, 0x81, 1, 0x81) => {
-                            if *cp == 0x81 {
-                                *zp = 2;
-                                *ep &= 0x7F;
-                                *tp = 8;
-                            }
-                            if *ep == 0x81 {
-                                *sp = 2;
-                                *cp &= 0x7F;
-                                *ip = 8;
+                            if *ep == 1 {
+                                *ip += 1;
                             }
                         },
-                        (_, _, _, 0x80) if *tp == 8 => {
-                            *dp = *bp;
-                            *sp = 2;
-                            *cp &= 0x7F;
-                        },
-                        (0, _, 0, _) | (1, _, 1, _) | (0, _, 1, _) | (1, _, 2, _) => (),
                         (255, _, _, _) | (_, _, 255, _) => {
                             *dp = 0;
                             *cp = 0;
@@ -120,7 +106,13 @@ impl LinkCable {
                             *zp = 0;
                             *ip = 0;
                         },
-                        _ => println!("Unexpected state: {:?} {:x?} {:?} {:x?}", *sp, *cp, *zp, *ep),
+                        _ => (),
+                    }
+
+                    if *tp == 2 && *ep & 0x80 == 0x80 {
+                        *dp = *bp;
+                        *sp = 2;
+                        *cp &= 0x7F;
                     }
                 }),
         }
@@ -274,7 +266,6 @@ impl From<(bool, Option<Child>)> for LinkCable {
                     owning: value,
                     shmem,
                     mutex,
-                    last_state: [0; 6],
                 }
             },
         }

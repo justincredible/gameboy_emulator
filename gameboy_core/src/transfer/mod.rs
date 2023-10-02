@@ -15,14 +15,13 @@ pub trait ByteTransfer {
         self.receive()
             .map_or((), |(interrupt, data, control)| {
                 mmu.write_byte(0xFF01, data);
+                if self.disconnected() {
+                    mmu.write_byte(0xFF01, 0xFF);
+                }
 
                 if interrupt {
                     mmu.write_byte(0xFF02, control);
                     mmu.request_interrupt(Interrupt::Serial);
-                }
-
-                if self.disconnected() {
-                    mmu.write_byte(0xFF01, 0xFF);
                 }
             });
     }
