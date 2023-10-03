@@ -65,16 +65,21 @@ impl LinkCable {
             (0, _, 1, _) => {
                 *sp = 1;
             },
+            (1, 0x81, 0, _) => {
+                *zp = 1;
+            },
             (1, 0x81, 1, _) => {
                 let a = *dp;
                 let b = *bp;
 
                 *dp = b;
-                *sp = 2;
-                *cp &= 0x7F;
                 *bp = a;
+                *sp = 2;
                 *zp = 2;
-                *ep &= 0x7F;
+            },
+            (2, 0x81, 2, _) => {
+                *sp = 3;
+                *zp = 3;
             },
             (255, _, _, _) | (_, _, 255, _) => {
                 *dp = 0;
@@ -149,21 +154,13 @@ impl ByteTransfer for LinkCable {
                             .as_ref()
                             .map_or(6, |_| 2))
                     };
-                    let counter = unsafe {
-                        &mut *(*guard).add(owning
-                            .as_ref()
-                            .map_or(7, |_| 3))
-                    };
 
                     if *status > 0 {
-                        if *status == 2 {
+                        if *status == 3 {
                             *status = 0;
-                            //*counter = 0;
 
                             Some((true, *data, *control))
                         } else {
-                            //*status += 1;
-
                             Some((false, *data, *control))
                         }
                     } else {
