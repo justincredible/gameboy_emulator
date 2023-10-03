@@ -22,7 +22,7 @@ pub use crate::gpu::color::Color;
 pub use crate::joypad::Controller;
 pub use crate::mmu::cartridge::Cartridge;
 pub use crate::rtc::Rtc;
-pub use crate::transfer::ByteTransfer;
+pub use crate::transfer::{ByteTransfer, Unlinked};
 pub struct Gameboy {
     emulator: Emulator,
     controller: Controller,
