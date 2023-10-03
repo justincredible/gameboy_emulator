@@ -59,31 +59,31 @@ impl LinkCable {
         };
 
         match (*sp, *cp, *zp, *ep) {
-            (0, 0x81, 0, 0x80) | (0, 0x81, 0, 0x81) => {
-                *sp = 2;
-                *zp = 2;
-
-                *tp = 1;
-                *ip = 0;
-
+            (0, 0x81, 0, 0x80) => {
                 let a = *dp;
                 let b = *bp;
 
-                /*if *ep == 0x81 {
-                    *dp = b;
-                    *sp = 2;
-                    *cp &= 0x7F;
-                } else {*/
-                    *sp = 1;
-                //}
+                *dp = b;
+                *sp = 2;
+                *cp &= 0x7F;
                 *bp = a;
                 *zp = 2;
                 *ep &= 0x7F;
             },
+            (0, 0x81, 0, _) => {
+                *sp = 1;
+                *cp &= 0x7F;
+                *bp = *dp;
+                *zp = 2;
+                *ep &= 0x7F;
+
+                *tp = 1;
+                *ip = 0;
+            },
             (_, _, _, 0x80) if *tp == 1 => {
                 *dp = *bp;
                 *sp = 2;
-                *cp &= 0x7F;
+
                 *tp = 0;
             },
             (255, _, _, _) | (_, _, 255, _) => {
@@ -172,6 +172,8 @@ impl ByteTransfer for LinkCable {
 
                             Some((true, *data, *control))
                         } else {
+                            //*status += 1;
+
                             Some((false, *data, *control))
                         }
                     } else {
