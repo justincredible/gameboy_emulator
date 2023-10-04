@@ -88,53 +88,6 @@ impl LinkCable {
                 .map_or(index, |_| index + 4))
         }
     }
-
-    fn transfer(&self, guard: LockGuard<'_>) {
-        let dp = self.data_pointer(&guard, 0);
-        let bp = self.data_pointer_alt(&guard, 0);
-        let cp = self.data_pointer(&guard, 1);
-        let ep = self.data_pointer_alt(&guard, 1);
-        let sp = self.data_pointer(&guard, 2);
-        let zp = self.data_pointer_alt(&guard, 2);
-        let wp = self.data_pointer(&guard, 3);
-        let vp = self.data_pointer_alt(&guard, 3);
-
-        match (*sp, *cp, *zp, *ep) {
-            (0, 0x81, 0, _) => {
-                *sp = 1;
-            },
-            (0, _, 1, _) => {
-                *sp = 1;
-            },
-            (1, 0x81, 0, _) => {
-                *zp = 1;
-            },
-            (1, 0x81, 1, _) => {
-                let a = *dp;
-                let b = *bp;
-
-                *dp = b;
-                *bp = a;
-                *sp = 2;
-                *zp = 2;
-            },
-            (2, 0x81, 2, _) => {
-                *sp = 3;
-                *zp = 3;
-            },
-            (255, _, _, _) | (_, _, 255, _) => {
-                *dp = 0;
-                *cp = 0;
-                *sp = 0;
-                *wp = 0;
-                *bp = 0;
-                *ep = 0;
-                *zp = 0;
-                *vp = 0;
-            },
-            _ => (),
-        }
-    }
 }
 
 impl ByteTransfer for LinkCable {
@@ -153,7 +106,49 @@ impl ByteTransfer for LinkCable {
                     *link_control = control;
                 }
 
-                self.transfer(guard);
+                let dp = self.data_pointer(&guard, 0);
+                let bp = self.data_pointer_alt(&guard, 0);
+                let cp = self.data_pointer(&guard, 1);
+                let ep = self.data_pointer_alt(&guard, 1);
+                let sp = self.data_pointer(&guard, 2);
+                let zp = self.data_pointer_alt(&guard, 2);
+                let wp = self.data_pointer(&guard, 3);
+                let vp = self.data_pointer_alt(&guard, 3);
+
+                match (*sp, *cp, *zp, *ep) {
+                    (0, 0x81, 0, 0x80) | (0, 0x81, 0, 0x81) => {
+                        let a = *dp;
+                        let b = *bp;
+
+                        *dp = b;
+                        *bp = a;
+                        *sp = 2;
+                        *zp = 2;
+                    },
+                    (0, 0x80, 0, _) => {
+                        if *wp < 8 {
+                            *wp += 1;
+                        } else {
+                            *sp = 3;
+                            *zp = 3;
+                        }
+                    },
+                    (255, _, _, _) | (_, _, 255, _) => {
+                        *dp = 0;
+                        *cp = 0;
+                        *sp = 0;
+                        *wp = 0;
+                        *bp = 0;
+                        *ep = 0;
+                        *zp = 0;
+                        *vp = 0;
+                    },
+                    _ => (),
+                }
+
+                let link_data = self.data_pointer(&guard, 0);
+                let link_control = self.data_pointer(&guard, 1);
+                let link_status = self.data_pointer(&guard, 2);
 
                 if *link_status > 0 {
                     if *link_status == 3 {
@@ -161,6 +156,8 @@ impl ByteTransfer for LinkCable {
 
                         Some((true, *link_data, *link_control))
                     } else {
+                        *link_status += 1;
+
                         Some((false, *link_data, *link_control))
                     }
                 } else {
