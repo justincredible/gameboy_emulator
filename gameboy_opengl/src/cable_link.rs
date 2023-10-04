@@ -93,6 +93,11 @@ impl LinkCable {
 impl ByteTransfer for LinkCable {
 
     fn transfer(&mut self, data: u8, control: u8) -> Option<(bool, u8, u8)> {
+        const READY: u8 = 0;
+        const TRANSFER: u8 = 1;
+        const COMPLETE: u8 = 2;
+        const DISCONNECT: u8 = 0xFF;
+
         self.mutex.0
             .lock()
             //.try_lock(Timeout::Val(std::time::Duration::from_secs(0)))
@@ -101,7 +106,7 @@ impl ByteTransfer for LinkCable {
                 let link_control = self.data_pointer(&guard, 1);
                 let link_status = self.data_pointer(&guard, 2);
 
-                if *link_status == 0 {
+                if *link_status == READY {
                     *link_data = data;
                     *link_control = control;
                 }
@@ -116,50 +121,52 @@ impl ByteTransfer for LinkCable {
                 let vp = self.data_pointer_alt(&guard, 3);
 
                 match (*sp, *cp, *zp, *ep) {
-                    (0, 0x81, 0, 0x80) | (0, 0x81, 0, 0x81) => {
+                    (READY, 0x81, READY, 0x80) | (READY, 0x81, READY, 0x81) => {
                         let a = *dp;
                         let b = *bp;
 
                         *dp = b;
                         *bp = a;
-                        *sp = 1;
-                        *zp = 1;
+                        *sp = TRANSFER;
+                        *zp = TRANSFER;
                         *cp &= 0x7F;
                         *ep &= 0x7F;
+                        *wp = 0;
+                        *vp = 0;
                     },
-                    (0, 0x80, 0, _) => {
-                        if *wp < 2 {
+                    (READY, 0x80, READY, _) => {
+                        if *wp < 8 {
                             *wp += 1;
                         } else {
-                            *sp = 2;
-                            *zp = 2;
+                            *sp = COMPLETE;
+                            *zp = COMPLETE;
+                            *wp = 0;
+                            *vp = 0;
                         }
                     },
-                    (255, _, _, _) | (_, _, 255, _) => {
+                    (DISCONNECT, _, _, _) | (_, _, DISCONNECT, _) => {
                         *dp = 0;
-                        *cp = 0;
-                        *sp = 0;
-                        *wp = 0;
                         *bp = 0;
+                        *cp = 0;
                         *ep = 0;
-                        *zp = 0;
+                        *sp = READY;
+                        *zp = READY;
+                        *wp = 0;
                         *vp = 0;
                     },
                     _ => (),
                 }
 
-                if *link_status > 0 {
-                    if *link_status == 2 {
-                        *link_status = 0;
-
-                        Some((true, *link_data, *link_control))
-                    } else {
-                        *link_status += 1;
-
+                match *link_status {
+                    TRANSFER => {
+                        *link_status = COMPLETE;
                         Some((false, *link_data, *link_control))
-                    }
-                } else {
-                    None
+                    },
+                    COMPLETE => {
+                        *link_status = READY;
+                        Some((true, *link_data, *link_control))
+                    },
+                    _ => None,
                 }
             })
             .unwrap_or_default()
