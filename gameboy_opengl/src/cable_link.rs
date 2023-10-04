@@ -92,7 +92,7 @@ impl LinkCable {
 
 impl ByteTransfer for LinkCable {
 
-    fn sync(&mut self, data: u8, control: u8) -> Option<(bool, u8, u8)> {
+    fn transfer(&mut self, data: u8, control: u8) -> Option<(bool, u8, u8)> {
         self.mutex.0
             .lock()
             //.try_lock(Timeout::Val(std::time::Duration::from_secs(0)))
@@ -122,15 +122,17 @@ impl ByteTransfer for LinkCable {
 
                         *dp = b;
                         *bp = a;
-                        *sp = 2;
-                        *zp = 2;
+                        *sp = 1;
+                        *zp = 1;
+                        *cp &= 0x7F;
+                        *ep &= 0x7F;
                     },
                     (0, 0x80, 0, _) => {
-                        if *wp < 8 {
+                        if *wp < 2 {
                             *wp += 1;
                         } else {
-                            *sp = 3;
-                            *zp = 3;
+                            *sp = 2;
+                            *zp = 2;
                         }
                     },
                     (255, _, _, _) | (_, _, 255, _) => {
@@ -146,12 +148,8 @@ impl ByteTransfer for LinkCable {
                     _ => (),
                 }
 
-                let link_data = self.data_pointer(&guard, 0);
-                let link_control = self.data_pointer(&guard, 1);
-                let link_status = self.data_pointer(&guard, 2);
-
                 if *link_status > 0 {
-                    if *link_status == 3 {
+                    if *link_status == 2 {
                         *link_status = 0;
 
                         Some((true, *link_data, *link_control))
