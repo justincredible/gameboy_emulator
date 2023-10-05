@@ -6,6 +6,22 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use raw_sync::locks::{LockGuard, LockImpl, LockInit, Mutex};
 use shared_memory::{Shmem, ShmemConf, ShmemError};
 
+const SERIAL_DATA: usize = 0;
+const SERIAL_CTRL: usize = 1;
+const LINK_STATE: usize = 2;
+const LINK_COUNT: usize = 3;
+const HALF_LINK: usize = 4;
+const TIMEOUT: u8 = 8; // arbitrary, master transfer expected duration
+
+#[repr(u8)]
+#[derive(PartialEq)]
+enum LinkState {
+    Disconnect,
+    Ready,
+    Transfer,
+    Complete,
+}
+
 pub struct LinkCable {
     owning: Option<Child>,
     _shmem: Shmem,
@@ -18,6 +34,7 @@ impl LinkCable {
         if !linked && link.is_none() {
             Box::new(Unlinked)
         } else {
+            // 8 aligned init byte and mutex plus 8 for the link
             const SHM_SZ: usize = 48;
 
             let shmem = match ShmemConf::new().size(SHM_SZ).flink("link_cable").create() {
@@ -33,7 +50,7 @@ impl LinkCable {
 
             unsafe {
                 is_init = &mut *(raw_ptr as *mut u8 as *mut AtomicU8);
-                raw_ptr = raw_ptr.add(8);
+                raw_ptr = raw_ptr.add(8); // align mutex
             }
 
             let mutex = if shmem.is_owner() {
@@ -48,7 +65,7 @@ impl LinkCable {
                 {
                     let guard = mutex.0.lock().unwrap();
                     for i in 0..8 {
-                        unsafe { *(*guard).add(i) = 0xFF; }
+                        unsafe { *(*guard).add(i) = LinkState::Disconnect as u8; }
                     }
                 }
                 is_init.store(1, Ordering::Relaxed);
@@ -73,84 +90,79 @@ impl LinkCable {
         }
     }
 
-    fn data_pointer(&self, guard: &LockGuard<'_>, index: usize) -> &mut u8 {
-        unsafe {
-            &mut *(*guard).add(self.owning
-                .as_ref()
-                .map_or(index + 4, |_| index))
-        }
+    unsafe fn data_pointer(&self, guard: &LockGuard<'_>, index: usize) -> &mut u8 {
+        &mut *(*guard).add(self.owning
+            .as_ref()
+            .map_or(index + HALF_LINK, |_| index))
     }
 
-    fn data_pointer_alt(&self, guard: &LockGuard<'_>, index: usize) -> &mut u8 {
-        unsafe {
-            &mut *(*guard).add(self.owning
-                .as_ref()
-                .map_or(index, |_| index + 4))
-        }
+    unsafe fn data_pointer_alt(&self, guard: &LockGuard<'_>, index: usize) -> &mut u8 {
+        &mut *(*guard).add(self.owning
+            .as_ref()
+            .map_or(index, |_| index + HALF_LINK))
     }
 }
 
 impl ByteTransfer for LinkCable {
 
     fn transfer(&mut self, data: u8, control: u8) -> Option<(bool, u8, u8)> {
-        const READY: u8 = 0;
-        const TRANSFER: u8 = 1;
-        const COMPLETE: u8 = 2;
-        const DISCONNECT: u8 = 0xFF;
 
         self.mutex.0
             .lock()
-            //.try_lock(Timeout::Val(std::time::Duration::from_secs(0)))
             .map(|guard| {
-                let link_data = self.data_pointer(&guard, 0);
-                let link_control = self.data_pointer(&guard, 1);
-                let link_status = self.data_pointer(&guard, 2);
+                let link_data = unsafe { self.data_pointer(&guard, SERIAL_DATA) };
+                let link_control = unsafe { self.data_pointer(&guard, SERIAL_CTRL) };
+                let link_status = unsafe { self.data_pointer(&guard, LINK_STATE) };
 
-                if *link_status == READY {
+                if *link_status == LinkState::Ready as u8 {
                     *link_data = data;
                     *link_control = control;
                 }
 
-                let dp = self.data_pointer(&guard, 0);
-                let bp = self.data_pointer_alt(&guard, 0);
-                let cp = self.data_pointer(&guard, 1);
-                let ep = self.data_pointer_alt(&guard, 1);
-                let sp = self.data_pointer(&guard, 2);
-                let zp = self.data_pointer_alt(&guard, 2);
-                let wp = self.data_pointer(&guard, 3);
-                let vp = self.data_pointer_alt(&guard, 3);
+                // aliasing here is serial
+                let dp = unsafe { self.data_pointer(&guard, SERIAL_DATA) };
+                let bp = unsafe { self.data_pointer_alt(&guard, SERIAL_DATA) };
+                let cp = unsafe { self.data_pointer(&guard, SERIAL_CTRL) };
+                let ep = unsafe { self.data_pointer_alt(&guard, SERIAL_CTRL) };
+                let sp = unsafe { self.data_pointer(&guard, LINK_STATE) };
+                let zp = unsafe { self.data_pointer_alt(&guard, LINK_STATE) };
+                let wp = unsafe { self.data_pointer(&guard, LINK_COUNT) };
+                let vp = unsafe { self.data_pointer_alt(&guard, LINK_COUNT) };
 
                 match (*sp, *cp, *zp, *ep) {
-                    (READY, 0x81, READY, 0x80) | (READY, 0x81, READY, 0x81) => {
+                    (ra, 0x81, rb, 0x80) | (ra, 0x81, rb, 0x81)
+                    if ra == rb && ra == LinkState::Ready as u8 => {
                         let a = *dp;
                         let b = *bp;
 
                         *dp = b;
                         *bp = a;
-                        *sp = TRANSFER;
-                        *zp = TRANSFER;
+                        *sp = LinkState::Transfer as u8;
+                        *zp = LinkState::Transfer as u8;
                         *cp &= 0x7F;
                         *ep &= 0x7F;
                         *wp = 0;
                         *vp = 0;
                     },
-                    (READY, 0x80, READY, _) => {
-                        if *wp < 8 {
+                    (ra, 0x80, rb, _)
+                    if ra == rb && ra == LinkState::Ready as u8 => {
+                        if *wp < TIMEOUT {
                             *wp += 1;
                         } else {
-                            *sp = COMPLETE;
-                            *zp = COMPLETE;
+                            *sp = LinkState::Complete as u8;
+                            *zp = LinkState::Complete as u8;
                             *wp = 0;
                             *vp = 0;
                         }
                     },
-                    (DISCONNECT, _, _, _) | (_, _, DISCONNECT, _) => {
+                    (d, _, _, _) | (_, _, d, _)
+                    if d == LinkState::Disconnect as u8 => {
                         *dp = 0;
                         *bp = 0;
                         *cp = 0;
                         *ep = 0;
-                        *sp = READY;
-                        *zp = READY;
+                        *sp = LinkState::Ready as u8;
+                        *zp = LinkState::Ready as u8;
                         *wp = 0;
                         *vp = 0;
                     },
@@ -158,12 +170,12 @@ impl ByteTransfer for LinkCable {
                 }
 
                 match *link_status {
-                    TRANSFER => {
-                        *link_status = COMPLETE;
+                    t if t == LinkState::Transfer as u8 => {
+                        *link_status = LinkState::Complete as u8;
                         Some((false, *link_data, *link_control))
                     },
-                    COMPLETE => {
-                        *link_status = READY;
+                    c if c == LinkState::Complete as u8 => {
+                        *link_status = LinkState::Ready as u8;
                         Some((true, *link_data, *link_control))
                     },
                     _ => None,
