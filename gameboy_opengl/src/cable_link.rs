@@ -105,11 +105,11 @@ impl LinkCable {
 
 impl ByteTransfer for LinkCable {
 
-    fn transfer(&mut self, data: u8, control: u8) -> Option<(bool, u8, u8)> {
+    fn transfer(&mut self, data: u8, control: u8) -> (bool, u8, u8) {
 
         self.mutex.0
             .lock()
-            .map(|guard| {
+            .map_or((false, data, control), |guard| {
                 let link_data = unsafe { self.data_pointer(&guard, SERIAL_DATA) };
                 let link_control = unsafe { self.data_pointer(&guard, SERIAL_CTRL) };
                 let link_status = unsafe { self.data_pointer(&guard, LINK_STATE) };
@@ -172,16 +172,15 @@ impl ByteTransfer for LinkCable {
                 match *link_status {
                     t if t == LinkState::Transfer as u8 => {
                         *link_status = LinkState::Complete as u8;
-                        Some((false, *link_data, *link_control))
+                        (false, *link_data, *link_control)
                     },
                     c if c == LinkState::Complete as u8 => {
                         *link_status = LinkState::Ready as u8;
-                        Some((true, *link_data, *link_control))
+                        (true, *link_data, *link_control)
                     },
-                    _ => None,
+                    _ => (false, *link_data, *link_control),
                 }
             })
-            .unwrap_or_default()
     }
 
     fn disconnected(&self) -> bool {
