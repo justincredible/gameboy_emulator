@@ -30,7 +30,7 @@ pub struct LinkCable {
 
 impl LinkCable {
 
-    pub fn from_init(linked: bool, link: Option<Child>) -> Box<dyn ByteTransfer> {
+    pub fn from_init((linked, link): (bool, Option<Child>)) -> Box<dyn ByteTransfer> {
         if !linked && link.is_none() {
             Box::new(Unlinked)
         } else {

@@ -55,7 +55,7 @@ pub fn start(rom: Vec<u8>, linked_gameboy: (bool, Option<Child>)) -> Result<(), 
     canvas.clear();
 
     let rtc = Box::new(NativeRTC::new());
-    let slc = LinkCable::from_init(linked_gameboy.0, linked_gameboy.1);
+    let slc = LinkCable::from_init(linked_gameboy);
     let mut emulator = Gameboy::from_rom(rom, rtc, slc)?;
 
     load_ram_save_data(emulator.get_cartridge_mut()).map_err(|e| format!("{:?}", e))?;

@@ -22,23 +22,25 @@ fn main() -> Result<(), String> {
         ])
         .get_matches();
 
-    let linked = matches.is_present("linked");
-    let child = matches
-        .value_of("link")
-        .and_then(|linked_filename| {
-            let bin_name = std::env::args_os().next().unwrap();
+    let linked = (
+        matches.is_present("linked"),
+        matches
+            .value_of("link")
+            .and_then(|linked_filename| {
+                let bin_name = std::env::args_os().next().unwrap();
 
-            Command::new(&bin_name)
-                .arg(&linked_filename)
-                .arg("--linked")
-                .spawn()
-                .ok()
-        });
+                Command::new(&bin_name)
+                    .arg(&linked_filename)
+                    .arg("--linked")
+                    .spawn()
+                    .ok()
+            })
+    );
     let rom_filename = matches.value_of("rom filename").unwrap();
     let mut file = File::open(rom_filename).map_err(|e| format!("{:?}", e))?;
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer).map_err(|e| format!("{:?}", e))?;
-    gameboy_opengl::start(buffer, (linked, child))?;
+    gameboy_opengl::start(buffer, linked)?;
 
     Ok(())
 }
