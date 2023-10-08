@@ -138,7 +138,7 @@ impl ByteTransfer for LinkPort {
                             *wp = 0;
                             *vp = 0;
                         },
-                        (ra, 0x80, rb, 0x80) | (ra, 0x80, rb, 0)
+                        (ra, 0x80, rb, 0x80)
                         if ra == rb && ra == LinkState::Ready as u8 => *cp = 0x81,
                         (ra, 0x81, rb, _)
                         if ra == rb && ra == LinkState::Transfer as u8 => {
@@ -163,15 +163,9 @@ impl ByteTransfer for LinkPort {
                                     *bp = b << shift_out | a >> shift_in;
                                 }
 
-                                if *wp >= BIT_LEN {
-                                    *sp = LinkState::Complete as u8;
-                                    *zp = LinkState::Complete as u8;
-                                    *cp &= 0x7F;
-                                    *ep &= 0x7F;
-                                    *wp = 0;
-                                    *vp = 0;
-                                }
-                            } else {
+                            }
+
+                            if *wp >= BIT_LEN {
                                 *sp = LinkState::Complete as u8;
                                 *zp = LinkState::Complete as u8;
                                 *cp &= 0x7F;
@@ -179,7 +173,6 @@ impl ByteTransfer for LinkPort {
                                 *wp = 0;
                                 *vp = 0;
                             }
-
                         },
                         (d, _, _, _) | (_, _, d, _) if d == LinkState::Disconnect as u8 => {
                             *dp = 0;
