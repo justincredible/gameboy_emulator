@@ -11,7 +11,7 @@ const SERIAL_CTRL: usize = 1;
 const LINK_STATE: usize = 2;
 const LINK_COUNT: usize = 3;
 const HALF_LINK: usize = 4;
-const TIMEOUT: u8 = 8; // arbitrary, master transfer expected duration
+const BIT_LEN: u8 = 8; // arbitrary, master transfer expected duration
 
 #[repr(u8)]
 #[derive(PartialEq)]
@@ -22,15 +22,15 @@ enum LinkState {
     Complete,
 }
 
-pub struct LinkCable {
+pub struct LinkPort {
     owning: Option<Child>,
-    _shmem: Shmem,
+    _cable: Shmem,
     mutex: (Box<dyn LockImpl>, usize),
 }
 
-impl LinkCable {
+impl LinkPort {
 
-    pub fn from_init((linked, link): (bool, Option<Child>)) -> Box<dyn ByteTransfer> {
+    pub fn from_linkage((linked, link): (bool, Option<Child>)) -> Box<dyn ByteTransfer> {
         if !linked && link.is_none() {
             Box::new(Unlinked)
         } else {
@@ -82,9 +82,9 @@ impl LinkCable {
                 }
             };
 
-            Box::new(LinkCable {
+            Box::new(LinkPort {
                 owning: link,
-                _shmem: shmem,
+                _cable: shmem,
                 mutex,
             })
         }
@@ -103,10 +103,9 @@ impl LinkCable {
     }
 }
 
-impl ByteTransfer for LinkCable {
+impl ByteTransfer for LinkPort {
 
-    fn transfer(&mut self, data: u8, control: u8) -> (bool, u8, u8) {
-
+    fn transfer(&mut self, cycles: i32, data: u8, control: u8) -> (bool, u8, u8) {
         self.mutex.0
             .lock()
             .map_or((false, data, control), |guard| {
@@ -119,65 +118,86 @@ impl ByteTransfer for LinkCable {
                     *link_control = control;
                 }
 
-                // aliasing here is serial
-                let dp = unsafe { self.data_pointer(&guard, SERIAL_DATA) };
-                let bp = unsafe { self.data_pointer_alt(&guard, SERIAL_DATA) };
-                let cp = unsafe { self.data_pointer(&guard, SERIAL_CTRL) };
-                let ep = unsafe { self.data_pointer_alt(&guard, SERIAL_CTRL) };
-                let sp = unsafe { self.data_pointer(&guard, LINK_STATE) };
-                let zp = unsafe { self.data_pointer_alt(&guard, LINK_STATE) };
-                let wp = unsafe { self.data_pointer(&guard, LINK_COUNT) };
-                let vp = unsafe { self.data_pointer_alt(&guard, LINK_COUNT) };
+                if self.owning.is_some() {
+                    // aliasing here is serial
+                    let dp = unsafe { self.data_pointer(&guard, SERIAL_DATA) };
+                    let bp = unsafe { self.data_pointer_alt(&guard, SERIAL_DATA) };
+                    let cp = unsafe { self.data_pointer(&guard, SERIAL_CTRL) };
+                    let ep = unsafe { self.data_pointer_alt(&guard, SERIAL_CTRL) };
+                    let sp = unsafe { self.data_pointer(&guard, LINK_STATE) };
+                    let zp = unsafe { self.data_pointer_alt(&guard, LINK_STATE) };
+                    let wp = unsafe { self.data_pointer(&guard, LINK_COUNT) };
+                    let vp = unsafe { self.data_pointer_alt(&guard, LINK_COUNT) };
 
-                match (*sp, *cp, *zp, *ep) {
-                    (ra, 0x81, rb, 0x80) | (ra, 0x81, rb, 0x81)
-                    if ra == rb && ra == LinkState::Ready as u8 => {
-                        let a = *dp;
-                        let b = *bp;
-
-                        *dp = b;
-                        *bp = a;
-                        *sp = LinkState::Transfer as u8;
-                        *zp = LinkState::Transfer as u8;
-                        *cp &= 0x7F;
-                        *ep &= 0x7F;
-                        *wp = 0;
-                        *vp = 0;
-                    },
-                    (ra, 0x80, rb, _)
-                    if ra == rb && ra == LinkState::Ready as u8 => {
-                        if *wp < TIMEOUT {
-                            *wp += 1;
-                        } else {
-                            *sp = LinkState::Complete as u8;
-                            *zp = LinkState::Complete as u8;
+                    match (*sp, *cp, *zp, *ep) {
+                        (ra, 0x81, rb, 1) if ra == rb && ra == LinkState::Ready as u8 => (), // courtesy wait is key
+                        (ra, 0x81, rb, _) | (ra, 0x80, rb, 0x81)
+                        if ra == rb && ra == LinkState::Ready as u8 => {
+                            *sp = LinkState::Transfer as u8;
+                            *zp = LinkState::Transfer as u8;
                             *wp = 0;
                             *vp = 0;
-                        }
-                    },
-                    (d, _, _, _) | (_, _, d, _)
-                    if d == LinkState::Disconnect as u8 => {
-                        *dp = 0;
-                        *bp = 0;
-                        *cp = 0;
-                        *ep = 0;
-                        *sp = LinkState::Ready as u8;
-                        *zp = LinkState::Ready as u8;
-                        *wp = 0;
-                        *vp = 0;
-                    },
-                    _ => (),
+                        },
+                        (ra, 0x80, rb, 0x80) | (ra, 0x80, rb, 0)
+                        if ra == rb && ra == LinkState::Ready as u8 => *cp = 0x81,
+                        (ra, 0x81, rb, _)
+                        if ra == rb && ra == LinkState::Transfer as u8 => {
+                            if *wp < BIT_LEN {
+                                let remaining = BIT_LEN - *wp;
+
+                                *wp += cycles as u8;
+
+                                let shift_out = u8::min(cycles as u8, remaining);
+
+                                if shift_out == BIT_LEN {
+                                    let tmp = *dp;
+                                    *dp = *bp;
+                                    *bp = tmp;
+                                } else {
+                                    let shift_in = BIT_LEN - shift_out;
+
+                                    let a = *dp;
+                                    let b = *bp;
+
+                                    *dp = a << shift_out | b >> shift_in;
+                                    *bp = b << shift_out | a >> shift_in;
+                                }
+
+                                if *wp >= BIT_LEN {
+                                    *sp = LinkState::Complete as u8;
+                                    *zp = LinkState::Complete as u8;
+                                    *wp = 0;
+                                    *vp = 0;
+                                }
+                            } else {
+                                *sp = LinkState::Complete as u8;
+                                *zp = LinkState::Complete as u8;
+                                *wp = 0;
+                                *vp = 0;
+                            }
+
+                        },
+                        (d, _, _, _) | (_, _, d, _) if d == LinkState::Disconnect as u8 => {
+                            *dp = 0;
+                            *bp = 0;
+                            *cp = 0;
+                            *ep = 0;
+                            *sp = LinkState::Ready as u8;
+                            *zp = LinkState::Ready as u8;
+                            *wp = 0;
+                            *vp = 0;
+                        },
+                        _ => (),
+                    }
+
                 }
 
                 match *link_status {
-                    t if t == LinkState::Transfer as u8 => {
-                        *link_status = LinkState::Complete as u8;
-                        (false, *link_data, *link_control)
-                    },
                     c if c == LinkState::Complete as u8 => {
                         *link_status = LinkState::Ready as u8;
                         (true, *link_data, *link_control)
                     },
+                    d if d == LinkState::Disconnect as u8 => Default::default(),
                     _ => (false, *link_data, *link_control),
                 }
             })

@@ -2,7 +2,7 @@ mod cable_link;
 mod native_rtc;
 mod screen;
 
-use crate::cable_link::LinkCable;
+use crate::cable_link::LinkPort;
 use crate::native_rtc::NativeRTC;
 use crate::screen::Screen;
 use directories::BaseDirs;
@@ -55,7 +55,7 @@ pub fn start(rom: Vec<u8>, linked_gameboy: (bool, Option<Child>)) -> Result<(), 
     canvas.clear();
 
     let rtc = Box::new(NativeRTC::new());
-    let slc = LinkCable::from_init(linked_gameboy);
+    let slc = LinkPort::from_linkage(linked_gameboy);
     let mut emulator = Gameboy::from_rom(rom, rtc, slc)?;
 
     load_ram_save_data(emulator.get_cartridge_mut()).map_err(|e| format!("{:?}", e))?;

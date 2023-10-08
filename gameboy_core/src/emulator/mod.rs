@@ -41,7 +41,7 @@ impl Emulator {
         let audio_buffer_full = self.memory.get_sound_mut().step(cycles);
         let vblank = self.gpu.step(cycles, &mut self.memory, system);
         controller.update(&mut self.memory);
-        link_cable.update(&mut self.memory);
+        link_cable.update(cycles, &mut self.memory);
         self.handle_interrupts();
 
         if audio_buffer_full {
