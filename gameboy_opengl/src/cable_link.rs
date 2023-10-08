@@ -166,12 +166,16 @@ impl ByteTransfer for LinkPort {
                                 if *wp >= BIT_LEN {
                                     *sp = LinkState::Complete as u8;
                                     *zp = LinkState::Complete as u8;
+                                    *cp &= 0x7F;
+                                    *ep &= 0x7F;
                                     *wp = 0;
                                     *vp = 0;
                                 }
                             } else {
                                 *sp = LinkState::Complete as u8;
                                 *zp = LinkState::Complete as u8;
+                                *cp &= 0x7F;
+                                *ep &= 0x7F;
                                 *wp = 0;
                                 *vp = 0;
                             }

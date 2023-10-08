@@ -22,7 +22,6 @@ pub trait ByteTransfer {
         }
 
         if complete {
-            mmu.write_byte(0xFF02, control & 0x7F);
             mmu.request_interrupt(Interrupt::Serial);
         }
     }
