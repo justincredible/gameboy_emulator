@@ -130,9 +130,8 @@ impl ByteTransfer for LinkPort {
                     let vp = unsafe { self.data_pointer_alt(&guard, LINK_COUNT) };
 
                     match (*sp, *cp, *zp, *ep) {
-                        (ra, 0x81, rb, 1) | (ra, 0x80, rb, 1)
-                        if ra == rb && ra == LinkState::Ready as u8 => (), // courtesy wait is key
-                        (ra, 0x81, rb, _) | (ra, 0x80, rb, _)
+                        (ra, 0x81, rb, 1) if ra == rb && ra == LinkState::Ready as u8 => (), // courtesy wait is key
+                        (ra, 0x81, rb, _) | (ra, 0x80, rb, 0x81) | (ra, 0x80, rb, 0x80)
                         if ra == rb && ra == LinkState::Ready as u8 => {
                             *sp = LinkState::Transfer as u8;
                             *zp = LinkState::Transfer as u8;
