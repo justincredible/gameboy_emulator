@@ -118,76 +118,75 @@ impl ByteTransfer for LinkPort {
                     *link_control = control;
                 }
 
-                if self.owning.is_some() {
-                    // aliasing here is serial
-                    let dp = unsafe { self.data_pointer(&guard, SERIAL_DATA) };
-                    let bp = unsafe { self.data_pointer_alt(&guard, SERIAL_DATA) };
-                    let cp = unsafe { self.data_pointer(&guard, SERIAL_CTRL) };
-                    let ep = unsafe { self.data_pointer_alt(&guard, SERIAL_CTRL) };
-                    let sp = unsafe { self.data_pointer(&guard, LINK_STATE) };
-                    let zp = unsafe { self.data_pointer_alt(&guard, LINK_STATE) };
-                    let wp = unsafe { self.data_pointer(&guard, LINK_COUNT) };
-                    let vp = unsafe { self.data_pointer_alt(&guard, LINK_COUNT) };
+                // aliasing here is serial
+                let dp = unsafe { self.data_pointer(&guard, SERIAL_DATA) };
+                let bp = unsafe { self.data_pointer_alt(&guard, SERIAL_DATA) };
+                let cp = unsafe { self.data_pointer(&guard, SERIAL_CTRL) };
+                let ep = unsafe { self.data_pointer_alt(&guard, SERIAL_CTRL) };
+                let sp = unsafe { self.data_pointer(&guard, LINK_STATE) };
+                let zp = unsafe { self.data_pointer_alt(&guard, LINK_STATE) };
+                let wp = unsafe { self.data_pointer(&guard, LINK_COUNT) };
+                let vp = unsafe { self.data_pointer_alt(&guard, LINK_COUNT) };
 
-                    match (*sp, *cp, *zp, *ep) {
-                        // transfer delay states
-                        (ra, 0x81, rb, 1) | (ra, 0x80, rb, 0) | (ra, 0x80, rb, 1)
-                        if ra == rb && ra == LinkState::Ready as u8 => (),
-                        // otherwise transfer
-                        (ra, 0x81, rb, _) | (ra, 0x80, rb, _)
-                        if ra == rb && ra == LinkState::Ready as u8 => {
-                            *sp = LinkState::Transfer as u8;
-                            *zp = LinkState::Transfer as u8;
-                            *wp = 0;
-                            *vp = 0;
-                        },
-                        (ra, 0x81, rb, _) | (ra, 0x80, rb, _)
-                        if ra == rb && ra == LinkState::Transfer as u8 => {
-                            if *wp < BYTE_BITS {
-                                let remaining = BYTE_BITS - *wp;
+                match (*sp, *cp, *zp, *ep) {
+                    // transfer delay states
+                    (ra, 0x81, rb, 1) | (ra, 1, rb, 0x81)
+                    | (ra, 0x80, rb, 0) | (ra, 0x80, rb, 1) | (ra, 0, rb, 0x80) | (ra, 1, rb, 0x80)
+                    if ra == rb && ra == LinkState::Ready as u8 => (),
+                    // otherwise transfer
+                    (ra, 0x81, rb, _) | (ra, 0x80, rb, _) | (ra, _, rb, 0x81) | (ra, _, rb, 0x80)
+                    if ra == rb && ra == LinkState::Ready as u8 => {
+                        *sp = LinkState::Transfer as u8;
+                        *zp = LinkState::Transfer as u8;
+                        *wp = 0;
+                        *vp = 0;
+                    },
+                    (ra, 0x81, rb, _) | (ra, 0x80, rb, _) | (ra, _, rb, 0x81) | (ra, _, rb, 0x80)
+                    if ra == rb && ra == LinkState::Transfer as u8 => {
+                        if *wp < BYTE_BITS {
+                            let remaining = BYTE_BITS - *wp;
 
-                                *wp += cycles as u8;
+                            *wp += cycles as u8;
+                            *vp += cycles as u8;
 
-                                let shift_out = u8::min(cycles as u8, remaining);
+                            let shift_out = u8::min(cycles as u8, remaining);
 
-                                if shift_out == BYTE_BITS {
-                                    let tmp = *dp;
-                                    *dp = *bp;
-                                    *bp = tmp;
-                                } else {
-                                    let shift_in = BYTE_BITS - shift_out;
+                            if shift_out == BYTE_BITS {
+                                let tmp = *dp;
+                                *dp = *bp;
+                                *bp = tmp;
+                            } else {
+                                let shift_in = BYTE_BITS - shift_out;
 
-                                    let a = *dp;
-                                    let b = *bp;
+                                let a = *dp;
+                                let b = *bp;
 
-                                    *dp = a << shift_out | b >> shift_in;
-                                    *bp = b << shift_out | a >> shift_in;
-                                }
-
+                                *dp = a << shift_out | b >> shift_in;
+                                *bp = b << shift_out | a >> shift_in;
                             }
 
-                            if *wp >= BYTE_BITS {
-                                *sp = LinkState::Complete as u8;
-                                *zp = LinkState::Complete as u8;
-                                *cp &= 0x7F;
-                                *ep &= 0x7F;
-                                *wp = 0;
-                                *vp = 0;
-                            }
-                        },
-                        (d, _, _, _) | (_, _, d, _) if d == LinkState::Disconnect as u8 => {
-                            *dp = 0;
-                            *bp = 0;
-                            *cp = 0;
-                            *ep = 0;
-                            *sp = LinkState::Ready as u8;
-                            *zp = LinkState::Ready as u8;
+                        }
+
+                        if *wp >= BYTE_BITS {
+                            *sp = LinkState::Complete as u8;
+                            *zp = LinkState::Complete as u8;
+                            *cp &= 0x7F;
+                            *ep &= 0x7F;
                             *wp = 0;
                             *vp = 0;
-                        },
-                        _ => (),
-                    }
-
+                        }
+                    },
+                    (d, _, _, _) | (_, _, d, _) if d == LinkState::Disconnect as u8 => {
+                        *dp = 0;
+                        *bp = 0;
+                        *cp = 0;
+                        *ep = 0;
+                        *sp = LinkState::Ready as u8;
+                        *zp = LinkState::Ready as u8;
+                        *wp = 0;
+                        *vp = 0;
+                    },
+                    _ => (),
                 }
 
                 match *link_status {
