@@ -139,8 +139,6 @@ impl ByteTransfer for LinkPort {
                             *wp = 0;
                             *vp = 0;
                         },
-                        /*(ra, 0x80, rb, 0x80)
-                        if ra == rb && ra == LinkState::Ready as u8 => *cp = 0x81,*/
                         (ra, 0x81, rb, _) | (ra, 0x80, rb, _)
                         if ra == rb && ra == LinkState::Transfer as u8 => {
                             if *wp < BIT_LEN {
