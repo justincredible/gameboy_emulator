@@ -11,7 +11,7 @@ const SERIAL_CTRL: usize = 1;
 const LINK_STATE: usize = 2;
 const LINK_COUNT: usize = 3;
 const HALF_LINK: usize = 4;
-const BIT_LEN: u8 = 8; // arbitrary, master transfer expected duration
+const BYTE_BITS: u8 = 8; // arbitrary, master transfer expected duration
 
 #[repr(u8)]
 #[derive(PartialEq)]
@@ -130,8 +130,11 @@ impl ByteTransfer for LinkPort {
                     let vp = unsafe { self.data_pointer_alt(&guard, LINK_COUNT) };
 
                     match (*sp, *cp, *zp, *ep) {
-                        (ra, 0x81, rb, 1) if ra == rb && ra == LinkState::Ready as u8 => (), // courtesy wait is key
-                        (ra, 0x81, rb, _) | (ra, 0x80, rb, 0x81) | (ra, 0x80, rb, 0x80)
+                        // transfer delay states
+                        (ra, 0x81, rb, 1) | (ra, 0x80, rb, 0) | (ra, 0x80, rb, 1)
+                        if ra == rb && ra == LinkState::Ready as u8 => (),
+                        // otherwise transfer
+                        (ra, 0x81, rb, _) | (ra, 0x80, rb, _)
                         if ra == rb && ra == LinkState::Ready as u8 => {
                             *sp = LinkState::Transfer as u8;
                             *zp = LinkState::Transfer as u8;
@@ -140,19 +143,19 @@ impl ByteTransfer for LinkPort {
                         },
                         (ra, 0x81, rb, _) | (ra, 0x80, rb, _)
                         if ra == rb && ra == LinkState::Transfer as u8 => {
-                            if *wp < BIT_LEN {
-                                let remaining = BIT_LEN - *wp;
+                            if *wp < BYTE_BITS {
+                                let remaining = BYTE_BITS - *wp;
 
                                 *wp += cycles as u8;
 
                                 let shift_out = u8::min(cycles as u8, remaining);
 
-                                if shift_out == BIT_LEN {
+                                if shift_out == BYTE_BITS {
                                     let tmp = *dp;
                                     *dp = *bp;
                                     *bp = tmp;
                                 } else {
-                                    let shift_in = BIT_LEN - shift_out;
+                                    let shift_in = BYTE_BITS - shift_out;
 
                                     let a = *dp;
                                     let b = *bp;
@@ -163,7 +166,7 @@ impl ByteTransfer for LinkPort {
 
                             }
 
-                            if *wp >= BIT_LEN {
+                            if *wp >= BYTE_BITS {
                                 *sp = LinkState::Complete as u8;
                                 *zp = LinkState::Complete as u8;
                                 *cp &= 0x7F;
