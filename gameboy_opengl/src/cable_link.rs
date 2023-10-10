@@ -11,7 +11,7 @@ const SERIAL_CTRL: usize = 1;
 const LINK_STATE: usize = 2;
 const LINK_COUNT: usize = 3;
 const HALF_LINK: usize = 4;
-const BYTE_BITS: u8 = 8; // arbitrary, master transfer expected duration
+const BYTE_BITS: u8 = 8;
 
 #[repr(u8)]
 #[derive(PartialEq)]
@@ -133,20 +133,20 @@ impl ByteTransfer for LinkPort {
                     (ra, _, rb, 1) | (ra, 1, rb, _) | (ra, 0x80, rb, 0) | (ra, 0, rb, 0x80)
                     if ra == rb && ra == LinkState::Ready as u8 => (),
                     // otherwise transfer
-                    (ra, 0x81, rb, _) | (ra, 0x80, rb, _) | (ra, _, rb, 0x81) | (ra, _, rb, 0x80)
+                    (ra, 0x81, rb, _) | (ra, _, rb, 0x81) | (ra, 0x80, rb, _) | (ra, _, rb, 0x80)
                     if ra == rb && ra == LinkState::Ready as u8 => {
                         *sp = LinkState::Transfer as u8;
                         *zp = LinkState::Transfer as u8;
                         *wp = 0;
                         *vp = 0;
                     },
-                    (ra, 0x81, rb, _) | (ra, 0x80, rb, _) | (ra, _, rb, 0x81) | (ra, _, rb, 0x80)
+                    (ra, 0x81, rb, _) | (ra, _, rb, 0x81) | (ra, 0x80, rb, _) | (ra, _, rb, 0x80)
                     if ra == rb && ra == LinkState::Transfer as u8 => {
                         if *wp < BYTE_BITS {
                             let remaining = BYTE_BITS - *wp;
 
                             *wp += cycles as u8;
-                            *vp += cycles as u8;
+                            *vp = *wp;
 
                             let shift_out = u8::min(cycles as u8, remaining);
 
@@ -175,7 +175,7 @@ impl ByteTransfer for LinkPort {
                             *vp = 0;
                         }
                     },
-                    (d, _, _, _) | (_, _, d, _) if d == LinkState::Disconnect as u8 => {
+                    (d, _, d, _) if d == LinkState::Disconnect as u8 => {
                         *dp = 0;
                         *bp = 0;
                         *cp = 0;
