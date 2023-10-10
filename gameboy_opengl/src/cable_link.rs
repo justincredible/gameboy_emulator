@@ -11,7 +11,6 @@ const SERIAL_CTRL: usize = 1;
 const LINK_STATE: usize = 2;
 const LINK_COUNT: usize = 3;
 const HALF_LINK: usize = 4;
-const BYTE_BITS: u8 = 8;
 
 #[repr(u8)]
 #[derive(PartialEq)]
@@ -105,7 +104,7 @@ impl LinkPort {
 
 impl ByteTransfer for LinkPort {
 
-    fn transfer(&mut self, cycles: i32, data: u8, control: u8) -> (bool, u8, u8) {
+    fn transfer(&mut self, data: u8, control: u8) -> (bool, u8, u8) {
         self.mutex.0
             .lock()
             .map_or((false, data, control), |guard| {
@@ -137,45 +136,19 @@ impl ByteTransfer for LinkPort {
                     if ra == rb && ra == LinkState::Ready as u8 => {
                         *sp = LinkState::Transfer as u8;
                         *zp = LinkState::Transfer as u8;
-                        *wp = 0;
-                        *vp = 0;
                     },
                     (ra, 0x81, rb, _) | (ra, _, rb, 0x81) | (ra, 0x80, rb, _) | (ra, _, rb, 0x80)
                     if ra == rb && ra == LinkState::Transfer as u8 => {
-                        if *wp < BYTE_BITS {
-                            let remaining = BYTE_BITS - *wp;
+                        let tmp = *dp;
+                        *dp = *bp;
+                        *bp = tmp;
 
-                            *wp += cycles as u8;
-                            *vp = *wp;
-
-                            let shift_out = u8::min(cycles as u8, remaining);
-
-                            if shift_out == BYTE_BITS {
-                                let tmp = *dp;
-                                *dp = *bp;
-                                *bp = tmp;
-                            } else {
-                                let shift_in = BYTE_BITS - shift_out;
-
-                                let a = *dp;
-                                let b = *bp;
-
-                                *dp = a << shift_out | b >> shift_in;
-                                *bp = b << shift_out | a >> shift_in;
-                            }
-
-                        }
-
-                        if *wp >= BYTE_BITS {
-                            *sp = LinkState::Complete as u8;
-                            *zp = LinkState::Complete as u8;
-                            *cp &= 0x7F;
-                            *ep &= 0x7F;
-                            *wp = 0;
-                            *vp = 0;
-                        }
+                        *sp = LinkState::Complete as u8;
+                        *zp = LinkState::Complete as u8;
+                        *cp &= 0x7F;
+                        *ep &= 0x7F;
                     },
-                    (d, _, d, _) if d == LinkState::Disconnect as u8 => {
+                    (da, _, db, _) if da == db && da == LinkState::Disconnect as u8 => {
                         *dp = 0;
                         *bp = 0;
                         *cp = 0;

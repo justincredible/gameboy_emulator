@@ -3,13 +3,12 @@ use crate::mmu::interrupt::Interrupt;
 
 pub trait ByteTransfer {
 
-    fn transfer(&mut self, cs: i32, sd: u8, sc: u8) -> (bool, u8, u8);
+    fn transfer(&mut self, sd: u8, sc: u8) -> (bool, u8, u8);
 
     fn disconnected(&self) -> bool;
 
-    fn update(&mut self, cycles: i32, mmu: &mut Memory) {
-        let (complete, data, control) = self.transfer(
-            cycles,
+    fn update(&mut self, mmu: &mut Memory) {
+        let (is_complete, data, control) = self.transfer(
             mmu.read_byte(0xFF01),
             mmu.read_byte(0xFF02)
         );
@@ -21,7 +20,7 @@ pub trait ByteTransfer {
             mmu.write_byte(0xFF01, 0xFF);
         }
 
-        if complete {
+        if is_complete {
             mmu.request_interrupt(Interrupt::Serial);
         }
     }
@@ -30,7 +29,7 @@ pub trait ByteTransfer {
 pub struct Unlinked;
 
 impl ByteTransfer for Unlinked {
-    fn transfer(&mut self, _: i32, _: u8, _: u8) -> (bool, u8, u8) {
+    fn transfer(&mut self, _: u8, _: u8) -> (bool, u8, u8) {
         Default::default()
     }
 
