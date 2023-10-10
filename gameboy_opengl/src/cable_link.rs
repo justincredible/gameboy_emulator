@@ -130,8 +130,7 @@ impl ByteTransfer for LinkPort {
 
                 match (*sp, *cp, *zp, *ep) {
                     // transfer delay states
-                    (ra, 0x81, rb, 1) | (ra, 1, rb, 0x81)
-                    | (ra, 0x80, rb, 0) | (ra, 0x80, rb, 1) | (ra, 0, rb, 0x80) | (ra, 1, rb, 0x80)
+                    (ra, _, rb, 1) | (ra, 1, rb, _) | (ra, 0x80, rb, 0) | (ra, 0, rb, 0x80)
                     if ra == rb && ra == LinkState::Ready as u8 => (),
                     // otherwise transfer
                     (ra, 0x81, rb, _) | (ra, 0x80, rb, _) | (ra, _, rb, 0x81) | (ra, _, rb, 0x80)
