@@ -88,16 +88,16 @@ impl LinkPort {
         }
     }
 
-    unsafe fn data_pointer(&self, guard: &LockGuard<'_>, index: usize) -> &mut u8 {
-        &mut *(*guard).add(self.owning
-            .as_ref()
-            .map_or(index + HALF_LINK, |_| index))
-    }
+    unsafe fn data_pointer(&self, remote: bool, guard: &LockGuard<'_>, index: usize) -> &mut u8 {
+        let (a,b) = if remote {
+            (index, index + HALF_LINK)
+        } else {
+            (index + HALF_LINK, index)
+        };
 
-    unsafe fn data_pointer_alt(&self, guard: &LockGuard<'_>, index: usize) -> &mut u8 {
         &mut *(*guard).add(self.owning
             .as_ref()
-            .map_or(index, |_| index + HALF_LINK))
+            .map_or(a, |_| b))
     }
 }
 
@@ -107,9 +107,9 @@ impl ByteTransfer for LinkPort {
         self.mutex.0
             .lock()
             .map_or((false, data, control), |guard| {
-                let link_data = unsafe { self.data_pointer(&guard, SERIAL_DATA) };
-                let link_control = unsafe { self.data_pointer(&guard, SERIAL_CTRL) };
-                let link_status = unsafe { self.data_pointer(&guard, LINK_STATE) };
+                let link_data = unsafe { self.data_pointer(false, &guard, SERIAL_DATA) };
+                let link_control = unsafe { self.data_pointer(false, &guard, SERIAL_CTRL) };
+                let link_status = unsafe { self.data_pointer(false, &guard, LINK_STATE) };
 
                 if *link_status == LinkState::Ready as u8 {
                     *link_data = data;
@@ -117,14 +117,14 @@ impl ByteTransfer for LinkPort {
                 }
 
                 // aliasing here is serial
-                let dp = unsafe { self.data_pointer(&guard, SERIAL_DATA) };
-                let bp = unsafe { self.data_pointer_alt(&guard, SERIAL_DATA) };
-                let cp = unsafe { self.data_pointer(&guard, SERIAL_CTRL) };
-                let ep = unsafe { self.data_pointer_alt(&guard, SERIAL_CTRL) };
-                let sp = unsafe { self.data_pointer(&guard, LINK_STATE) };
-                let zp = unsafe { self.data_pointer_alt(&guard, LINK_STATE) };
-                let wp = unsafe { self.data_pointer(&guard, LINK_COUNT) };
-                let vp = unsafe { self.data_pointer_alt(&guard, LINK_COUNT) };
+                let dp = unsafe { self.data_pointer(false, &guard, SERIAL_DATA) };
+                let bp = unsafe { self.data_pointer(true, &guard, SERIAL_DATA) };
+                let cp = unsafe { self.data_pointer(false, &guard, SERIAL_CTRL) };
+                let ep = unsafe { self.data_pointer(true, &guard, SERIAL_CTRL) };
+                let sp = unsafe { self.data_pointer(false, &guard, LINK_STATE) };
+                let zp = unsafe { self.data_pointer(true, &guard, LINK_STATE) };
+                let wp = unsafe { self.data_pointer(false, &guard, LINK_COUNT) };
+                let vp = unsafe { self.data_pointer(true, &guard, LINK_COUNT) };
 
                 match (*sp, *cp, *zp, *ep) {
                     // transfer delay states
