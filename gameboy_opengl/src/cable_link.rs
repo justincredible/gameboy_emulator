@@ -17,7 +17,6 @@ const HALF_LINK: usize = 4;
 enum LinkState {
     Disconnect,
     Ready,
-    Transfer,
     Complete,
 }
 
@@ -134,11 +133,6 @@ impl ByteTransfer for LinkPort {
                     // otherwise transfer
                     (ra, 0x81, rb, _) | (ra, _, rb, 0x81) | (ra, 0x80, rb, _) | (ra, _, rb, 0x80)
                     if ra == rb && ra == LinkState::Ready as u8 => {
-                        *sp = LinkState::Transfer as u8;
-                        *zp = LinkState::Transfer as u8;
-                    },
-                    (ra, 0x81, rb, _) | (ra, _, rb, 0x81) | (ra, 0x80, rb, _) | (ra, _, rb, 0x80)
-                    if ra == rb && ra == LinkState::Transfer as u8 => {
                         let tmp = *dp;
                         *dp = *bp;
                         *bp = tmp;
