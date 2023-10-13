@@ -11,6 +11,7 @@ const SERIAL_CTRL: usize = 1;
 const LINK_STATE: usize = 2;
 const LINK_COUNT: usize = 3;
 const HALF_LINK: usize = 4;
+const TIMEOUT: u8 = 8;
 
 #[repr(u8)]
 #[derive(PartialEq)]
@@ -24,6 +25,7 @@ pub struct LinkPort {
     owning: Option<Child>,
     _cable: Shmem,
     mutex: (Box<dyn LockImpl>, usize),
+    connect: bool,
 }
 
 impl LinkPort {
@@ -84,6 +86,7 @@ impl LinkPort {
                 owning: link,
                 _cable: shmem,
                 mutex,
+                connect: false,
             })
         }
     }
@@ -95,16 +98,16 @@ impl LinkPort {
             (index + HALF_LINK, index)
         };
 
-        &mut *(*guard).add(self.owning
-            .as_ref()
-            .map_or(a, |_| b))
+        &mut *(*guard).add(self.owning.as_ref().map_or(a, |_| b))
     }
 }
 
 impl ByteTransfer for LinkPort {
 
     fn transfer(&mut self, data: u8, control: u8) -> (bool, u8, u8) {
-        self.mutex.0
+        let mut connected = true;
+
+        let status = self.mutex.0
             .lock()
             .map_or((false, data, control), |guard| {
                 let link_data = unsafe { self.data_pointer(false, &guard, SERIAL_DATA) };
@@ -128,8 +131,17 @@ impl ByteTransfer for LinkPort {
 
                 match (*sp, *cp, *zp, *ep) {
                     // transfer delay states
-                    (ra, _, rb, 1) | (ra, 1, rb, _) | (ra, 0x80, rb, 0) | (ra, 0, rb, 0x80)
+                    (ra, _, rb, 1) | (ra, 1, rb, _) | (ra, 0, rb, 0x80)
                     if ra == rb && ra == LinkState::Ready as u8 => (),
+                    // timeout disconnect
+                    (ra, 0x80, rb, 0)
+                    if ra == rb && ra == LinkState::Ready as u8 => {
+                        if *wp < TIMEOUT {
+                            *wp += 1;
+                        } else {
+                            *sp = LinkState::Disconnect as u8;
+                        }
+                    },
                     // otherwise transfer
                     (ra, 0x81, rb, _) | (ra, _, rb, 0x81) | (ra, 0x80, rb, _) | (ra, _, rb, 0x80)
                     if ra == rb && ra == LinkState::Ready as u8 => {
@@ -141,8 +153,12 @@ impl ByteTransfer for LinkPort {
                         *zp = LinkState::Complete as u8;
                         *cp &= 0x7F;
                         *ep &= 0x7F;
+                        *wp = 0;
+                        *vp = 0;
                     },
-                    (da, _, db, _) if da == db && da == LinkState::Disconnect as u8 => {
+                    // post init state
+                    (da, db, dc, dd) if da == LinkState::Disconnect as u8
+                        && da == db && db == dc && dc == dd => {
                         *dp = 0;
                         *bp = 0;
                         *cp = 0;
@@ -152,6 +168,15 @@ impl ByteTransfer for LinkPort {
                         *wp = 0;
                         *vp = 0;
                     },
+                    // check reconnect
+                    (d, _, _, _) | (_, _, d, _) if d == LinkState::Disconnect as u8 => {
+                        if *cp & 0x80 == 0x80 && *ep & 0x80 == 0x80 {
+                            *sp = LinkState::Ready as u8;
+                            *zp = LinkState::Ready as u8;
+                            *wp = 0;
+                            *vp = 0;
+                        }
+                    },
                     _ => (),
                 }
 
@@ -160,13 +185,20 @@ impl ByteTransfer for LinkPort {
                         *link_status = LinkState::Ready as u8;
                         (true, *link_data, *link_control)
                     },
-                    d if d == LinkState::Disconnect as u8 => Default::default(),
+                    d if d == LinkState::Disconnect as u8 => {
+                        connected = false;
+                        Default::default()
+                    },
                     _ => (false, *link_data, *link_control),
                 }
-            })
+            });
+
+        self.connect = connected;
+
+        status
     }
 
     fn disconnected(&self) -> bool {
-        false
+        !self.connect
     }
 }
