@@ -104,6 +104,10 @@ impl LinkPort {
 
 impl ByteTransfer for LinkPort {
 
+    fn disconnected(&self) -> bool {
+        !self.connect
+    }
+
     fn transfer(&mut self, data: u8, control: u8) -> (bool, u8, u8) {
         let mut connected = true;
 
@@ -196,9 +200,5 @@ impl ByteTransfer for LinkPort {
         self.connect = connected;
 
         status
-    }
-
-    fn disconnected(&self) -> bool {
-        !self.connect
     }
 }

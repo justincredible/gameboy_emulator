@@ -3,9 +3,9 @@ use crate::mmu::interrupt::Interrupt;
 
 pub trait ByteTransfer {
 
-    fn transfer(&mut self, sd: u8, sc: u8) -> (bool, u8, u8);
-
     fn disconnected(&self) -> bool;
+
+    fn transfer(&mut self, sd: u8, sc: u8) -> (bool, u8, u8);
 
     fn update(&mut self, mmu: &mut Memory) {
         let (is_complete, data, control) = self.transfer(
@@ -29,11 +29,12 @@ pub trait ByteTransfer {
 pub struct Unlinked;
 
 impl ByteTransfer for Unlinked {
-    fn transfer(&mut self, _: u8, _: u8) -> (bool, u8, u8) {
-        Default::default()
-    }
 
     fn disconnected(&self) -> bool {
         true
+    }
+
+    fn transfer(&mut self, _: u8, _: u8) -> (bool, u8, u8) {
+        Default::default()
     }
 }
