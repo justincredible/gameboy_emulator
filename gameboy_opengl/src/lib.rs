@@ -1,6 +1,8 @@
+mod link_cable;
 mod native_rtc;
 mod screen;
 
+use crate::link_cable::LinkPort;
 use crate::native_rtc::NativeRTC;
 use crate::screen::Screen;
 use directories::BaseDirs;
@@ -13,10 +15,11 @@ use std::cell::RefCell;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
+use std::process::Child;
 use std::rc::Rc;
 use std::time::Duration;
 
-pub fn start(rom: Vec<u8>) -> Result<(), String> {
+pub fn start(rom: Vec<u8>, lgb: (bool, Option<Child>)) -> Result<(), String> {
     let sdl_context = sdl2::init()?;
 
     let audio_subsystem = sdl_context.audio()?;
@@ -52,7 +55,7 @@ pub fn start(rom: Vec<u8>) -> Result<(), String> {
     canvas.clear();
 
     let rtc = Box::new(NativeRTC::new());
-    let slc = Box::new(gameboy_core::Unlinked);
+    let slc = LinkPort::from_linkage(lgb);
     let mut emulator = Gameboy::from_rom(rom, rtc, slc)?;
 
     load_ram_save_data(emulator.get_cartridge_mut()).map_err(|e| format!("{:?}", e))?;
