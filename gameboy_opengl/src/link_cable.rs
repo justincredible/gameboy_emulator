@@ -12,9 +12,6 @@ const SERIAL_CTRL: usize = 1;
 const LINK_STATE: usize = 2;
 const LINK_COUNT: usize = 3;
 const HALF_LINK: usize = 4;
-// Arbitrary threshold in the range 4K - 16K
-// Noticeable delays during heavy transfers but a higher value is generally more reliable
-const TRANSFER_DELAY: u16 = 8192;
 
 #[repr(u8)]
 #[derive(
@@ -27,7 +24,6 @@ enum LinkState {
     Disconnect,
     Ready,
     Receive,
-    Transfer,
 }
 
 struct LinkCable {
@@ -35,7 +31,6 @@ struct LinkCable {
     mutex: (Box<dyn LockImpl>, usize),
     sender: Sender<(u8, u8)>,
     receiver: Receiver<(i32, (u8, u8))>,
-    counter: u16,
 }
 
 impl LinkCable {
@@ -94,15 +89,12 @@ impl LinkCable {
             mutex,
             sender,
             receiver,
-            counter: 0,
         }
     }
 
-    pub fn run(mut self) {
+    pub fn run(self) {
         // loop indefinitely, but the Shmem and Mutex needs to be dropped correctly on program exit
         'thread: loop {
-            self.counter += 1;
-
             // Grab the lastest message
             let mut odc = None;
             while let Ok((cycles, dc)) = self.receiver.try_recv() {
@@ -112,9 +104,6 @@ impl LinkCable {
                     odc = Some(dc);
                 }
             }
-
-            // Dance of the borrow checker
-            let mut reset = false;
 
             if let Ok(guard) = self.mutex.0.lock() {
                 let dp = unsafe { self.data_pointer(false, &guard, SERIAL_DATA) };
@@ -137,13 +126,8 @@ impl LinkCable {
                     *wp = 0;
                     *vp = 0;
                 }
-                // Begin transfer
+                // Do transfer
                 if *cp & 0x81 == 0x81 && *zp == LinkState::Receive as u8 {
-                    *sp = LinkState::Transfer as u8;
-                    *zp = LinkState::Transfer as u8;
-                }
-                // Complete transfer
-                if *cp & 0x81 == 0x81 && *zp == LinkState::Transfer as u8 && self.counter >= TRANSFER_DELAY {
                     let tmp = *dp;
                     *dp = *bp;
                     *bp = tmp;
@@ -167,16 +151,10 @@ impl LinkCable {
                 // Signal and update emulator
                 if *sp == LinkState::Complete as u8 {
                     *sp = LinkState::Ready as u8;
-                    reset = true;
                     if let Err(e) = self.sender.send((*dp, *cp)) {
                         eprintln!("{:?}", e);
                     }
                 }
-            }
-
-            // And thus the borrow checker abides
-            if reset {
-                self.counter = 0;
             }
         }
     }
