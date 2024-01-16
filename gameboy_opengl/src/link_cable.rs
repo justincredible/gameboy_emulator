@@ -93,7 +93,7 @@ impl LinkCable {
     }
 
     pub fn run(self) {
-        // loop indefinitely, but the Shmem and Mutex needs to be dropped correctly on program exit
+        // loop indefinitely, but the Shmem and Mutex need to be dropped correctly on program exit
         'thread: loop {
             // Grab the lastest message
             let mut odc = None;
