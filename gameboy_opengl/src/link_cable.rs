@@ -26,16 +26,80 @@ enum LinkState {
     Receive,
 }
 
+pub struct LinkPort {
+    _owning: Option<Child>,
+    sender: Sender<(u8, u8)>,
+    receiver: Receiver<(u8, u8)>,
+    kill: Sender<()>,
+    last_sent: (u8, u8),
+}
+
+impl LinkPort {
+
+    pub fn from_linkage((linked, gameboy): (bool, Option<Child>)) -> Box<dyn ByteTransfer> {
+        if !linked && gameboy.is_none() {
+            Box::new(Unlinked)
+        } else {
+            let (ps, pr) = channel();
+            let (cs, cr) = channel();
+            let (ks, kr) = channel();
+
+            std::thread::spawn(move || { LinkCable::new(cs, pr, kr).run() });
+
+            Box::new(LinkPort {
+                _owning: gameboy,
+                sender: ps,
+                receiver: cr,
+                kill: ks,
+                last_sent: (0xFF, 0),
+            })
+        }
+    }
+}
+
+impl ByteTransfer for LinkPort {
+
+    fn transfer(&mut self, _cycles: i32, data: u8, control: u8) -> Option<(u8, u8)> {
+        let dc = (data, control);
+        // This side of the channel runs frequently, communicate changes only
+        if self.last_sent != dc {
+            if let Err(e) = self.sender.send(dc) {
+                eprintln!("{:?}", e);
+            } else {
+                self.last_sent = dc;
+            }
+        }
+
+        self.receiver.try_recv().ok()
+    }
+
+    // Not implemented
+    fn disconnected(&self) -> bool {
+        false
+    }
+}
+
+impl Drop for LinkPort {
+
+    fn drop(&mut self) {
+        // Signal the thread to terminate
+        if let Err(e) = self.kill.send(()) {
+            eprintln!("{:?}", e);
+        }
+    }
+}
+
 struct LinkCable {
     cable: Shmem,
     mutex: (Box<dyn LockImpl>, usize),
     sender: Sender<(u8, u8)>,
-    receiver: Receiver<(i32, (u8, u8))>,
+    receiver: Receiver<(u8, u8)>,
+    kill: Receiver<()>,
 }
 
 impl LinkCable {
 
-    pub fn new(sender: Sender<(u8, u8)>, receiver: Receiver<(i32, (u8, u8))>) -> Self {
+    pub fn new(sender: Sender<(u8, u8)>, receiver: Receiver<(u8, u8)>, kill: Receiver<()>) -> Self {
         // 8 aligned init byte and mutex plus 8 for the link
         const SHM_SZ: usize = 48;
 
@@ -89,20 +153,20 @@ impl LinkCable {
             mutex,
             sender,
             receiver,
+            kill,
         }
     }
 
     pub fn run(self) {
         // loop indefinitely, but the Shmem and Mutex need to be dropped correctly on program exit
-        'thread: loop {
+        loop {
+            if self.kill.try_recv().is_ok() {
+                break;
+            }
             // Grab the lastest message
             let mut odc = None;
-            while let Ok((cycles, dc)) = self.receiver.try_recv() {
-                if cycles < 0 {
-                    break 'thread;
-                } else {
-                    odc = Some(dc);
-                }
+            while let Ok(dc) = self.receiver.try_recv() {
+                odc = Some(dc);
             }
 
             if let Ok(guard) = self.mutex.0.lock() {
@@ -150,9 +214,10 @@ impl LinkCable {
                 }
                 // Signal and update emulator
                 if *sp == LinkState::Complete as u8 {
-                    *sp = LinkState::Ready as u8;
                     if let Err(e) = self.sender.send((*dp, *cp)) {
                         eprintln!("{:?}", e);
+                    } else {
+                        *sp = LinkState::Ready as u8;
                     }
                 }
             }
@@ -167,64 +232,5 @@ impl LinkCable {
         };
 
         &mut *(*guard).add(offset)
-    }
-}
-
-pub struct LinkPort {
-    _owning: Option<Child>,
-    sender: Sender<(i32, (u8, u8))>,
-    receiver: Receiver<(u8, u8)>,
-    last_sent: (u8, u8),
-}
-
-impl LinkPort {
-
-    pub fn from_linkage((linked, gameboy): (bool, Option<Child>)) -> Box<dyn ByteTransfer> {
-        if !linked && gameboy.is_none() {
-            Box::new(Unlinked)
-        } else {
-            let (ps, pr) = channel();
-            let (cs, cr) = channel();
-
-            std::thread::spawn(move || { LinkCable::new(cs, pr).run() });
-
-            Box::new(LinkPort {
-                _owning: gameboy,
-                sender: ps,
-                receiver: cr,
-                last_sent: (0xFF, 0),
-            })
-        }
-    }
-}
-
-impl ByteTransfer for LinkPort {
-
-    fn transfer(&mut self, cycles: i32, data: u8, control: u8) -> Option<(u8, u8)> {
-        // This side of the channel runs frequently, communicate changes only
-        if self.last_sent != (data, control) {
-            if let Err(e) = self.sender.send((cycles, (data, control))) {
-                eprintln!("{:?}", e);
-            } else {
-                self.last_sent = (data, control);
-            }
-        }
-
-        self.receiver.try_recv().ok()
-    }
-
-    // Not implemented
-    fn disconnected(&self) -> bool {
-        false
-    }
-}
-
-impl Drop for LinkPort {
-
-    fn drop(&mut self) {
-        // Signal the thread to terminate
-        if let Err(e) = self.sender.send((-1,(0xFF,0))) {
-            eprintln!("{:?}", e);
-        }
     }
 }
